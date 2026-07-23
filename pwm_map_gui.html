@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PWM 추력 맵핑 GUI</title>
+<style>
+  /* ---- 기본 스타일(외부 CDN 없이 자체 포함) ---- */
+  :root {
+    --bg: #0f1620; --panel: #182230; --line: #2a3644;
+    --fg: #e6edf3; --muted: #9aa7b4; --accent: #3fb950;
+    --danger: #f85149; --warn: #d29922; --chip: #21303f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "Noto Sans KR", Segoe UI, Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600;
+       letter-spacing: .04em; }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .banner { background: #3a1d1d; border: 1px solid var(--danger); color: #ffd7d3;
+            border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=number] {
+    width: 100%; background: #0d1117; border: 1px solid var(--line); color: var(--fg);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit;
+  }
+  input:disabled { opacity: .5; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .btns { display: flex; gap: 12px; margin-top: 8px; }
+  button { font-family: inherit; font-size: 16px; font-weight: 700; border: none;
+           border-radius: 10px; padding: 16px; cursor: pointer; flex: 1; }
+  #startBtn { background: var(--accent); color: #052e0f; }
+  #stopBtn  { background: var(--danger); color: #fff; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .est { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .est b { color: var(--fg); }
+  .err { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 18px; }
+  /* ---- 진행/상태 ---- */
+  .statusline { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--accent); }
+  .dot.busy { background: var(--warn); }
+  .dot.err { background: var(--danger); }
+  .bar { height: 20px; background: #0d1117; border-radius: 6px; overflow: hidden;
+         border: 1px solid var(--line); }
+  .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width .3s; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 8px; margin-top: 14px; }
+  .chip { background: var(--chip); border-radius: 8px; padding: 8px 10px; }
+  .chip .t { font-size: 11px; color: var(--muted); }
+  .chip .v { font-size: 16px; font-weight: 700; }
+  .msg { margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PWM → 추력 맵핑 측정 (계단식)</h1>
+  <div class="est">라즈베리파이 ↔ 픽스호크 6C · 격자 계단식 스윕 + CSV 로깅</div>
+
+  <div class="banner">
+    ⚠️ <b>모터가 실제로 회전합니다.</b> 스탠드 고정 · 회전면에 사람/손/물건 금지 · 보안경 착용.
+    픽스호크는 <b>시동 해제(disarmed)</b> 상태여야 합니다.
+    처음엔 <b>좁은 범위(예 B 1000~1200)</b>로 짧게 확인하세요.
+    문제가 생기면 아래 빨간 <b>STOP</b> 또는 배터리 분리.
+  </div>
+
+  <!-- ============ 설정 ============ -->
+  <div class="grid2">
+    <div class="panel">
+      <h2>연결</h2>
+      <label>device (Pi5 GPIO UART / 개발용 udpin:...)</label>
+      <input type="text" id="device" value="/dev/ttyAMA0">
+      <label>baud</label>
+      <input type="number" id="baud" value="921600">
+    </div>
+
+    <div class="panel">
+      <h2>격자 범위 (µs)</h2>
+      <label>A 모터 (고정축): 시작 / 끝 / 스텝</label>
+      <div class="row">
+        <input type="number" id="a_start" value="1000">
+        <input type="number" id="a_end"   value="1000">
+        <input type="number" id="a_step"  value="100">
+      </div>
+      <label>B 모터 (스윕축): 시작 / 끝 / 스텝</label>
+      <div class="row">
+        <input type="number" id="b_start" value="1000">
+        <input type="number" id="b_end"   value="2000">
+        <input type="number" id="b_step"  value="100">
+      </div>
+      <div class="est">※ 시작=끝 으로 넣으면 그 축은 값 1개. 둘 다 그러면 조합 1개(한 조합만).</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>스윕 / 타이밍</h2>
+    <div class="row">
+      <div><label>스윕 반복(N)</label><input type="number" id="repeats" value="1"></div>
+      <div><label>dwell(s) — 계단 한 칸 유지·기록</label><input type="number" id="dwell_s" value="2" step="0.5"></div>
+      <div><label>재전송(Hz)</label><input type="number" id="resend_hz" value="5" step="0.5"></div>
+    </div>
+    <div class="row">
+      <div><label>timeout(s)</label><input type="number" id="timeout_s" value="1" step="0.1"></div>
+      <div><label>warmup(s)</label><input type="number" id="warmup_s" value="3" step="0.5"></div>
+      <div></div>
+    </div>
+    <div class="est" id="estimate">—</div>
+    <div class="err" id="formError"></div>
+  </div>
+
+  <!-- ============ 실행 버튼 ============ -->
+  <div class="panel">
+    <div class="btns">
+      <button id="startBtn">측정 시작</button>
+      <button id="stopBtn" disabled>STOP (즉시 정지)</button>
+    </div>
+  </div>
+
+  <!-- ============ 진행상황 ============ -->
+  <div class="panel">
+    <h2>진행상황</h2>
+    <div class="statusline">
+      <span class="dot" id="dot"></span>
+      <span id="stateText">대기 중</span>
+    </div>
+    <div class="bar"><div id="barFill"></div></div>
+
+    <div class="kv">
+      <div class="chip"><div class="t">진행</div><div class="v" id="kProgress">0 / 0</div></div>
+      <div class="chip"><div class="t">스윕</div><div class="v" id="kSweep">0 / 0</div></div>
+      <div class="chip"><div class="t">조합</div><div class="v" id="kCombo">0 / 0</div></div>
+      <div class="chip"><div class="t">현재 A / B</div><div class="v" id="kAB">– / –</div></div>
+      <div class="chip"><div class="t">전압 (V)</div><div class="v" id="kVolt">–</div></div>
+      <div class="chip"><div class="t">전류 (A)</div><div class="v" id="kCurr">–</div></div>
+      <div class="chip"><div class="t">경과 (s)</div><div class="v" id="kElapsed">0</div></div>
+      <div class="chip"><div class="t">남은 시간(추정)</div><div class="v" id="kEta">–</div></div>
+    </div>
+    <div class="msg" id="serverMsg"></div>
+  </div>
+</div>
+
+<script>
+// =====================================================================
+//  이 GUI는 파이썬 로컬 서버(pwm_thrust_map.py)와 통신한다.
+//   - [측정 시작] → POST /start (설정 JSON)
+//   - [STOP]     → POST /stop
+//   - 0.5초마다   → GET /status (진행상황 표시 + watchdog '살아있음' 신호 겸함)
+//  ※ 이 폴링이 곧 watchdog ping 이라, 브라우저를 닫으면 서버가 끊김을 감지해 모터를 자동 정지한다.
+// =====================================================================
+
+// 설정 입력칸(id 그대로 서버 키로 전송). 전부 숫자(+ device 문자열).
+const NUM_FIELDS = ["baud","a_start","a_end","a_step","b_start","b_end","b_step",
+                    "repeats","dwell_s","resend_hz","timeout_s","warmup_s"];
+
+function $(id){ return document.getElementById(id); }
+
+// --- 입력값 모으기 ---
+function readCfg(){
+  const cfg = { device: $("device").value.trim() };
+  NUM_FIELDS.forEach(k => cfg[k] = Number($(k).value));
+  return cfg;
+}
+
+// --- µs 격자 값 개수 계산(서버 frange_us 와 같은 규칙: start~end 포함, step 간격) ---
+function countAxis(start, end, step){
+  if (step <= 0 || end < start) return 0;
+  let n = 0;
+  for (let v = start; v <= end + 1e-9; v += step) n++;
+  return n;
+}
+
+// --- 프론트 검증 + 예상치 표시. 문제 있으면 시작 버튼 잠금 ---
+function validateAndEstimate(){
+  const c = readCfg();
+  let err = "";
+  const inRange = v => v >= 1000 && v <= 2000;
+  if (![c.a_start,c.a_end,c.b_start,c.b_end].every(inRange))
+    err = "격자 값은 1000~2000µs 범위여야 합니다.";
+  else if (c.a_step <= 0 || c.b_step <= 0) err = "스텝은 0보다 커야 합니다.";
+  else if (c.a_end < c.a_start || c.b_end < c.b_start) err = "끝 값은 시작 값 이상이어야 합니다.";
+  else if (c.repeats < 1) err = "스윕 반복은 1 이상이어야 합니다.";
+  else if (c.dwell_s <= 0) err = "dwell은 0보다 커야 합니다.";
+  else if (c.resend_hz <= 0) err = "재전송 Hz는 0보다 커야 합니다.";
+  else if (c.timeout_s <= 1.0 / c.resend_hz)
+    err = "timeout 은 재전송 간격(1/Hz)보다 커야 값이 유지됩니다.";
+
+  const combos = countAxis(c.a_start,c.a_end,c.a_step) * countAxis(c.b_start,c.b_end,c.b_step);
+  const points = combos * c.repeats;
+  // 계단식이라 스텝 사이 정지/간격 없음 → 대략 소요 = 점 개수 × dwell (+ warmup 1회)
+  const estSec = Math.max(0, points * c.dwell_s + c.warmup_s);
+
+  $("formError").textContent = err;
+  $("estimate").innerHTML = err ? "설정을 확인하세요." :
+    `총 <b>${combos}</b>개 조합 × <b>${c.repeats}</b>스윕 = <b>${points}</b>계단 · ` +
+    `예상 <b>${(estSec/60).toFixed(1)}</b>분`;
+
+  return err === "";
+}
+
+// 설정칸 아무거나 바뀌면 다시 검증/추정
+document.querySelectorAll("input").forEach(el => el.addEventListener("input", validateAndEstimate));
+
+// --- 시작 ---
+$("startBtn").addEventListener("click", async () => {
+  if (!validateAndEstimate()) return;
+  const cfg = readCfg();
+  // 항상 모터가 실제로 회전하므로 시작 전 한 번 더 확인
+  if (!confirm("⚠️ 모터가 실제로 회전합니다.\n스탠드 고정·회전면 확보·보안경 확인했나요?\n\n시작할까요?")) return;
+  $("formError").textContent = "";
+  try {
+    const res = await fetch("/start", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    if (!res.ok) { $("formError").textContent = data.error || "시작 실패"; return; }
+    setRunningUI(true);
+  } catch (e) {
+    $("formError").textContent = "서버에 연결 못 함: " + e;
+  }
+});
+
+// --- STOP ---
+$("stopBtn").addEventListener("click", async () => {
+  try { await fetch("/stop", {method: "POST"}); } catch (e) {}
+});
+
+// 실행 중이면 설정칸 잠그고 버튼 전환
+function setRunningUI(running){
+  document.querySelectorAll("input").forEach(el => el.disabled = running);
+  $("startBtn").disabled = running;
+  $("stopBtn").disabled = !running;
+}
+
+// --- 상태 폴링(= watchdog ping) : 0.5초마다 ---
+const STATE_LABEL = {
+  idle:"대기 중", connecting:"연결 중...", running:"측정 중",
+  done:"완료", stopped:"중단됨", error:"오류",
+};
+async function poll(){
+  try {
+    const res = await fetch("/status");
+    const s = await res.json();
+    render(s);
+  } catch (e) {
+    $("serverMsg").textContent = "서버 응답 없음: " + e;
+  }
+}
+function render(s){
+  // 상태 점/텍스트
+  const dot = $("dot");
+  dot.className = "dot";
+  if (s.state === "running" || s.state === "connecting") dot.classList.add("busy");
+  else if (s.state === "done") dot.classList.add("on");
+  else if (s.state === "error") dot.classList.add("err");
+  $("stateText").textContent = STATE_LABEL[s.state] || s.state;
+
+  // 진행바
+  const pct = s.point_total > 0 ? (100 * s.point_done / s.point_total) : 0;
+  $("barFill").style.width = pct.toFixed(1) + "%";
+
+  // 숫자들
+  $("kProgress").textContent = `${s.point_done} / ${s.point_total}`;
+  $("kSweep").textContent = `${s.sweep_idx} / ${s.sweep_total}`;
+  $("kCombo").textContent = `${s.combo_idx} / ${s.combo_total}`;
+  $("kAB").textContent = (s.a_us || s.b_us) ? `${s.a_us} / ${s.b_us}` : "– / –";
+  $("kVolt").textContent = s.voltage_v == null ? "–" : s.voltage_v.toFixed(2);
+  $("kCurr").textContent = s.current_a == null ? "–" : s.current_a.toFixed(2);
+  $("kElapsed").textContent = (s.elapsed_s || 0).toFixed(0);
+  $("kEta").textContent = s.eta_s ? s.eta_s.toFixed(0) + "s" : "–";
+  $("serverMsg").textContent = s.message || "";
+
+  // 실행이 끝났으면 입력 다시 열기
+  const active = (s.state === "running" || s.state === "connecting");
+  setRunningUI(active);
+}
+
+validateAndEstimate();
+setInterval(poll, 500);   // 이 폴링이 진행상황 갱신 + watchdog 신호를 겸한다
+poll();
+</script>
+</body>
+</html>
