@@ -160,16 +160,17 @@ def check_armed(conn, timeout=3.0):
     return bool(hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 
 
-def request_rates(conn, servo_hz=20, sys_hz=10):
+def request_rates(conn, servo_hz=20, bat_hz=10):
     """필요한 메시지의 송신 주기를 SET_MESSAGE_INTERVAL로 올린다(공식 권장 방식).
 
     - SERVO_OUTPUT_RAW: 실제 출력 PWM(µs)  → 우리가 기록할 '진리값'
-    - SYS_STATUS      : 배터리 전압/전류
+    - BATTERY_STATUS  : 배터리 전압/전류. QGroundControl이 화면에 쓰는 바로 그 메시지라
+                        여기서 읽으면 QGC 표시값과 동일해진다(캘리브레이션은 FC에서 적용됨).
     interval(µs) = 1e6 / rate_hz
     """
     for msg_id, hz in (
         (mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, servo_hz),
-        (mavutil.mavlink.MAVLINK_MSG_ID_SYS_STATUS, sys_hz),
+        (mavutil.mavlink.MAVLINK_MSG_ID_BATTERY_STATUS, bat_hz),
     ):
         conn.mav.command_long_send(
             conn.target_system, conn.target_component,
@@ -179,6 +180,29 @@ def request_rates(conn, servo_hz=20, sys_hz=10):
             int(1e6 / hz),     # param2: 주기(µs)
             0, 0, 0, 0, 0,
         )
+
+
+def read_battery(msg):
+    """BATTERY_STATUS(#147)에서 QGroundControl과 동일한 방식으로 (전압V, 전류A)를 계산한다.
+
+    QGC는 SYS_STATUS가 아니라 BATTERY_STATUS의 '셀 전압 배열'을 합해 총전압을 만든다.
+    (전압 divider 캘리브레이션은 픽스호크 펌웨어에서 이미 적용된 값 → 이 합이 곧 QGC 표시값)
+      - voltages[10]     : 셀 전압(mV). 안 쓰는 칸 = UINT16_MAX(65535) → 합산 제외
+      - voltages_ext[4]  : 확장 셀 전압(mV). 안 쓰는 칸 = 0(하위호환) → 합산 제외
+      - current_battery  : 전류(cA=10mA단위). -1 = 미측정
+    PX4는 셀별 전압이 없으면 총전압을 여러 칸에 나눠 담으므로, 어느 경우든 유효 칸의 합이 총전압.
+    반환: (voltage_v 또는 None, current_a 또는 None)
+    """
+    total_mv = 0
+    for v in msg.voltages:                       # 셀 1~10 (mV)
+        if v != 65535:                           # 65535 = 안 쓰는 셀
+            total_mv += v
+    for v in getattr(msg, "voltages_ext", []):   # 셀 11~14 (구버전 pymavlink엔 없을 수 있음)
+        if v not in (0, 65535):                  # 0 = 안 쓰는 셀
+            total_mv += v
+    voltage_v = total_mv / 1000.0 if total_mv > 0 else None
+    current_a = msg.current_battery / 100.0 if msg.current_battery != -1 else None
+    return voltage_v, current_a
 
 
 def preflight_ack(conn, timeout_s):
@@ -395,10 +419,13 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
             continue
         mtype = msg.get_type()
 
-        if mtype == "SYS_STATUS":
-            # voltage_battery: mV→V,  current_battery: cA(10mA단위)→A
-            latest["voltage_v"] = msg.voltage_battery / 1000.0
-            latest["current_a"] = msg.current_battery / 100.0
+        if mtype == "BATTERY_STATUS" and getattr(msg, "id", 0) == 0:
+            # QGC와 동일한 소스(주 배터리 id=0의 BATTERY_STATUS)에서 전압/전류 계산
+            v, c = read_battery(msg)
+            if v is not None:
+                latest["voltage_v"] = v
+            if c is not None:
+                latest["current_a"] = c
             ctl.set_status(voltage_v=latest["voltage_v"], current_a=latest["current_a"])
 
         elif mtype == "SERVO_OUTPUT_RAW":
