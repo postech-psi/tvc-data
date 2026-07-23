@@ -248,6 +248,22 @@ def ramp_down(conn, a_us, b_us, timeout_s):
         time.sleep(RAMP_S / RAMP_STEPS)
 
 
+def ramp_to(conn, from_a, from_b, to_a, to_b, timeout_s):
+    """[정상 전환] (from_a,from_b) → (to_a,to_b) 로 여러 단계에 걸쳐 '서서히' 이동한다.
+
+    한 세트(스윕)가 끝나고 다음 세트를 시작할 때, PWM을 한 번에 확 줄이지 않고
+    부드럽게 내려서(또는 올려서) 새 세트를 시작하기 위한 용도.
+    RAMP_S초 동안 RAMP_STEPS 단계로 선형 보간한다.
+    """
+    for i in range(1, RAMP_STEPS + 1):
+        frac = i / float(RAMP_STEPS)              # 0 → 1
+        a = from_a + (to_a - from_a) * frac
+        b = from_b + (to_b - from_b) * frac
+        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s)
+        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s)
+        time.sleep(RAMP_S / RAMP_STEPS)
+
+
 def frange_us(start, end, step):
     """start~end(포함)까지 step 간격의 µs 리스트를 만든다(정수 µs)."""
     values = []
@@ -511,6 +527,15 @@ def run_measurement(ctl, cfg):
                 last_a, last_b = a_us, b_us
                 ctl.set_status(point_done=point_done)
             fp.flush()   # 스윕 한 바퀴 끝날 때마다 디스크에 안전 저장
+
+            # 다음 스윕(세트)이 남았으면: 마지막 조합에서 다음 스윕 첫 조합으로 '서서히' 이동.
+            # (한 번에 PWM을 확 줄이지 않도록 — 세트 사이 부드러운 전환으로 새 세트를 시작)
+            if r < cfg["repeats"]:
+                first_a, first_b = combos[0]
+                ctl.set_status(message=f"스윕 {r} 종료 → 다음 스윕 준비(서서히 감속)")
+                ctl.check_abort()
+                ramp_to(conn, last_a, last_b, first_a, first_b, cfg["timeout_s"])
+                last_a, last_b = first_a, first_b
 
         # 4-3) 정상 종료: 마지막 값에서 서서히 정지
         ramp_down(conn, last_a, last_b, cfg["timeout_s"])
