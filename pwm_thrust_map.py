@@ -183,24 +183,28 @@ def request_rates(conn, servo_hz=20, bat_hz=10):
 
 
 def read_battery(msg):
-    """BATTERY_STATUS(#147)에서 QGroundControl과 동일한 방식으로 (전압V, 전류A)를 계산한다.
+    """BATTERY_STATUS(#147)에서 QGroundControl과 '완전히 동일한 알고리즘'으로 (전압V, 전류A)를 계산.
 
-    QGC는 SYS_STATUS가 아니라 BATTERY_STATUS의 '셀 전압 배열'을 합해 총전압을 만든다.
-    (전압 divider 캘리브레이션은 픽스호크 펌웨어에서 이미 적용된 값 → 이 합이 곧 QGC 표시값)
-      - voltages[10]     : 셀 전압(mV). 안 쓰는 칸 = UINT16_MAX(65535) → 합산 제외
-      - voltages_ext[4]  : 확장 셀 전압(mV). 안 쓰는 칸 = 0(하위호환) → 합산 제외
-      - current_battery  : 전류(cA=10mA단위). -1 = 미측정
-    PX4는 셀별 전압이 없으면 총전압을 여러 칸에 나눠 담으므로, 어느 경우든 유효 칸의 합이 총전압.
+    QGC 소스(src/Vehicle/FactGroups/BatteryFactGroupListModel.cc)의 전압 계산과 일치시킨다:
+      · voltages[0..9]를 순서대로 더하되, UINT16_MAX(65535)를 '처음' 만나면 즉시 멈춘다(break).
+      · 이어서 voltages_ext[0..3]를 더하되, 0(미지원)을 '처음' 만나면 즉시 멈춘다(break).
+      · current_battery: -1이면 미측정(None), 아니면 cA(10mA단위)→A.
+    MAVLink 스펙상 PX4는 유효 셀을 index 0부터 '연속'으로 채우고 나머지를 UINT16_MAX로 두므로,
+    '건너뛰기'가 아니라 '처음 무효값에서 멈춤'이 정확한 재구성이며 QGC 표시값과 값이 완전 일치한다.
+    (셀 정보가 없으면 총전압이 voltages[0]에 통째로 담긴다. 전압 divider 캘리브레이션은 QGC가
+     아니라 픽스호크(PX4) 펌웨어에서 이미 적용되어 전송된다.)
     반환: (voltage_v 또는 None, current_a 또는 None)
     """
-    total_mv = 0
-    for v in msg.voltages:                       # 셀 1~10 (mV)
-        if v != 65535:                           # 65535 = 안 쓰는 셀
-            total_mv += v
-    for v in getattr(msg, "voltages_ext", []):   # 셀 11~14 (구버전 pymavlink엔 없을 수 있음)
-        if v not in (0, 65535):                  # 0 = 안 쓰는 셀
-            total_mv += v
-    voltage_v = total_mv / 1000.0 if total_mv > 0 else None
+    total_mv = None
+    for v in msg.voltages:                        # 셀 1~10 (mV)
+        if v == 65535:                            # UINT16_MAX = 유효 셀의 끝 → 멈춤
+            break
+        total_mv = v if total_mv is None else total_mv + v
+    for v in getattr(msg, "voltages_ext", []):    # 셀 11~14 (구버전 pymavlink엔 없을 수 있음)
+        if v == 0:                                # 0 = 미지원 → 멈춤
+            break
+        total_mv = v if total_mv is None else total_mv + v
+    voltage_v = total_mv / 1000.0 if total_mv is not None else None
     current_a = msg.current_battery / 100.0 if msg.current_battery != -1 else None
     return voltage_v, current_a
 
