@@ -1,0 +1,133 @@
+{
+  "name": "2026-07-24_s2",
+  "date": "2026-07-24",
+  "start_local": "2026-07-24 16:20:35",
+  "n_runs": 10,
+  "ulogs": [
+    {
+      "name": "log_2_2026-7-24-16-17-52.ulg",
+      "rel_path": "raw/2026-07-24/ulog/_redundant/log_2_2026-7-24-16-17-52.ulg",
+      "size_mb": 18.59,
+      "start_local": "2026-07-24 16:17:52",
+      "epoch_resolved": null
+    },
+    {
+      "name": "log_3_2026-7-24-17-11-46.ulg",
+      "rel_path": "raw/2026-07-24/ulog/log_3_2026-7-24-17-11-46.ulg",
+      "size_mb": 119.69,
+      "start_local": "2026-07-24 16:17:56",
+      "epoch_resolved": {
+        "start_epoch": 1784877476.3714547,
+        "end_epoch": 1784880710.2721567,
+        "offset": 1784877475.1427927,
+        "clock_spread_s": 0.007,
+        "boot_match_corr": 0.9981,
+        "source": "thrust_map_1784879069.csv",
+        "fc_window": [
+          1.228662,
+          3235.129364
+        ],
+        "anchored_by": [
+          {
+            "pwm_map": "thrust_map_1784879069.csv",
+            "fc_start": 1597.8,
+            "fc_end": 1657.75,
+            "corr": 0.9981
+          }
+        ],
+        "offset_agreement_s": 0.0,
+        "covers": [
+          {
+            "pwm_map": "thrust_map_1784877654.csv",
+            "start_local": "2026-07-24 16:20:57",
+            "fc_start": 182.7,
+            "fc_end": 192.64,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784877916.csv",
+            "start_local": "2026-07-24 16:25:19",
+            "fc_start": 444.74,
+            "fc_end": 454.69,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784878217.csv",
+            "start_local": "2026-07-24 16:30:20",
+            "fc_start": 745.85,
+            "fc_end": 805.76,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784878684.csv",
+            "start_local": "2026-07-24 16:38:08",
+            "fc_start": 1212.86,
+            "fc_end": 1272.82,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784878910.csv",
+            "start_local": "2026-07-24 16:41:54",
+            "fc_start": 1438.86,
+            "fc_end": 1498.81,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784879069.csv",
+            "start_local": "2026-07-24 16:44:32",
+            "fc_start": 1597.8,
+            "fc_end": 1657.74,
+            "how": "pwm_correlation"
+          },
+          {
+            "pwm_map": "thrust_map_1784879247.csv",
+            "start_local": "2026-07-24 16:47:30",
+            "fc_start": 1775.84,
+            "fc_end": 1835.8,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784879853.csv",
+            "start_local": "2026-07-24 16:57:36",
+            "fc_start": 2381.84,
+            "fc_end": 2441.8,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784880116.csv",
+            "start_local": "2026-07-24 17:01:59",
+            "fc_start": 2644.84,
+            "fc_end": 2704.8,
+            "how": "epoch_containment"
+          },
+          {
+            "pwm_map": "thrust_map_1784880580.csv",
+            "start_local": "2026-07-24 17:09:43",
+            "fc_start": 3108.85,
+            "fc_end": 3168.8,
+            "how": "epoch_containment"
+          }
+        ]
+      }
+    },
+    {
+      "name": "log_4_2026-7-24-17-12-18.ulg",
+      "rel_path": "raw/2026-07-24/ulog/_redundant/log_4_2026-7-24-17-12-18.ulg",
+      "size_mb": 1.21,
+      "start_local": "2026-07-24 17:12:18",
+      "epoch_resolved": null
+    }
+  ],
+  "runs": [
+    "A1700_B1700_1620",
+    "A1800_B1800_1625",
+    "A1850_B1850_1630",
+    "A1850_B1850_1638",
+    "A1850_B1850_1641",
+    "A1850_B1850_1644",
+    "A1850_B1850_1647",
+    "A1850_B1850_1657",
+    "A1850_B1850_1701",
+    "A1850_B1850_1709"
+  ]
+}

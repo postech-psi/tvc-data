@@ -1,0 +1,39 @@
+{
+  "name": "A1850_B1850_1647",
+  "session": "2026-07-24_s2",
+  "start_local": "2026-07-24 16:47:30",
+  "duration_s": 60.0,
+  "label": "",
+  "flags": [
+    "no_thrust_data"
+  ],
+  "sources": {
+    "pwm_map": "raw/2026-07-24/pwm/thrust_map_1784879247.csv"
+  },
+  "alignment": {
+    "lag_s": null,
+    "lag_corr": null,
+    "lag_method": null,
+    "drive_signal": null,
+    "grid_hz": 50.0,
+    "n_rows": 2997
+  },
+  "ulog": {
+    "name": "log_3_2026-7-24-17-11-46.ulg",
+    "rel_path": "raw/2026-07-24/ulog/log_3_2026-7-24-17-11-46.ulg",
+    "fc_start": 1775.84,
+    "fc_end": 1835.8,
+    "matched_by": "epoch_containment",
+    "fc_to_epoch_offset": 1784877475.1427927
+  },
+  "voltage_noload_v": {
+    "before_v": 11.496,
+    "after_v": 11.33,
+    "drop_v": 0.167,
+    "n_before": 190,
+    "n_after": 190,
+    "v": 11.496,
+    "source": "log_3_2026-7-24-17-11-46.ulg"
+  },
+  "steady_state": []
+}

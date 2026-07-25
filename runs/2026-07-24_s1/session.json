@@ -1,0 +1,151 @@
+{
+  "name": "2026-07-24_s1",
+  "date": "2026-07-24",
+  "start_local": "2026-07-24 00:05:35",
+  "n_runs": 6,
+  "ulogs": [
+    {
+      "name": "log_3_2026-7-24-00-27-40.ulg",
+      "rel_path": "raw/2026-07-24/ulog/log_3_2026-7-24-00-27-40.ulg",
+      "size_mb": 13.6,
+      "start_local": "2026-07-24 00:21:42",
+      "epoch_resolved": {
+        "start_epoch": 1784820102.132148,
+        "end_epoch": 1784820462.433361,
+        "offset": 1784820101.038662,
+        "clock_spread_s": 0.005,
+        "boot_match_corr": 0.9999,
+        "source": "thrust_map_1784820192.csv",
+        "fc_window": [
+          1.093486,
+          361.394699
+        ],
+        "anchored_by": [
+          {
+            "pwm_map": "thrust_map_1784820192.csv",
+            "fc_start": 94.88,
+            "fc_end": 122.33,
+            "corr": 0.9999
+          },
+          {
+            "pwm_map": "thrust_map_1784820250.csv",
+            "fc_start": 152.88,
+            "fc_end": 236.18,
+            "corr": 0.9994
+          }
+        ],
+        "offset_agreement_s": 0.003,
+        "covers": [
+          {
+            "pwm_map": "thrust_map_1784820192.csv",
+            "start_local": "2026-07-24 00:23:15",
+            "fc_start": 94.87,
+            "fc_end": 122.33,
+            "how": "pwm_correlation"
+          },
+          {
+            "pwm_map": "thrust_map_1784820250.csv",
+            "start_local": "2026-07-24 00:24:13",
+            "fc_start": 152.88,
+            "fc_end": 236.18,
+            "how": "pwm_correlation"
+          }
+        ]
+      }
+    },
+    {
+      "name": "log_1_2026-7-24-01-07-24.ulg",
+      "rel_path": "raw/2026-07-24/ulog/_redundant/log_1_2026-7-24-01-07-24.ulg",
+      "size_mb": 13.04,
+      "start_local": "2026-07-24 01:03:44",
+      "epoch_resolved": {
+        "start_epoch": 1784822624.586349,
+        "end_epoch": 1784822966.987516,
+        "offset": 1784822623.65116,
+        "clock_spread_s": 0.009,
+        "boot_match_corr": 0.9998,
+        "source": "thrust_map_1784822651.csv",
+        "fc_window": [
+          0.935189,
+          343.336356
+        ],
+        "anchored_by": [
+          {
+            "pwm_map": "thrust_map_1784822651.csv",
+            "fc_start": 30.88,
+            "fc_end": 208.08,
+            "corr": 0.9998
+          }
+        ],
+        "offset_agreement_s": 0.0,
+        "duplicate_of": "log_1_2026-7-24-01-16-18.ulg",
+        "covers": [
+          {
+            "pwm_map": "thrust_map_1784822651.csv",
+            "start_local": "2026-07-24 01:04:14",
+            "fc_start": 30.88,
+            "fc_end": 208.08,
+            "how": "pwm_correlation"
+          }
+        ]
+      }
+    },
+    {
+      "name": "log_1_2026-7-24-01-16-18.ulg",
+      "rel_path": "raw/2026-07-24/ulog/log_1_2026-7-24-01-16-18.ulg",
+      "size_mb": 28.43,
+      "start_local": "2026-07-24 01:03:44",
+      "epoch_resolved": {
+        "start_epoch": 1784822624.6164649,
+        "end_epoch": 1784823378.1177728,
+        "offset": 1784822623.6812758,
+        "clock_spread_s": 0.011,
+        "boot_match_corr": 0.9998,
+        "source": "thrust_map_1784823227.csv",
+        "fc_window": [
+          0.935189,
+          754.436497
+        ],
+        "anchored_by": [
+          {
+            "pwm_map": "thrust_map_1784822651.csv",
+            "fc_start": 30.88,
+            "fc_end": 208.08,
+            "corr": 0.9998
+          },
+          {
+            "pwm_map": "thrust_map_1784823227.csv",
+            "fc_start": 606.88,
+            "fc_end": 739.68,
+            "corr": 0.9998
+          }
+        ],
+        "offset_agreement_s": 0.03,
+        "covers": [
+          {
+            "pwm_map": "thrust_map_1784822651.csv",
+            "start_local": "2026-07-24 01:04:14",
+            "fc_start": 30.85,
+            "fc_end": 208.05,
+            "how": "pwm_correlation"
+          },
+          {
+            "pwm_map": "thrust_map_1784823227.csv",
+            "start_local": "2026-07-24 01:13:50",
+            "fc_start": 606.88,
+            "fc_end": 739.69,
+            "how": "pwm_correlation"
+          }
+        ]
+      }
+    }
+  ],
+  "runs": [
+    "A1000_B1200-2000_0005_1200f",
+    "A1300_B1000-2000_0023",
+    "A1300_B1000-2000_0024",
+    "A1400_B1000-2000_0051_1300",
+    "A1400_B1000-2000_0104",
+    "A1500_B1000-2000_0113_3s"
+  ]
+}

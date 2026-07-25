@@ -1,0 +1,55 @@
+{
+  "name": "A1850_B1850_1630",
+  "session": "2026-07-24_s2",
+  "start_local": "2026-07-24 16:30:10",
+  "duration_s": 83.2,
+  "label": "",
+  "flags": [
+    "gui_current_unused",
+    "gui_pwm_unused",
+    "gui_rpm_unused"
+  ],
+  "sources": {
+    "pwm_map": "raw/2026-07-24/pwm/thrust_map_1784878217.csv",
+    "loadcell": "raw/2026-07-24/loadcell/data_20260724_163010.csv"
+  },
+  "alignment": {
+    "lag_s": 0.65,
+    "lag_corr": 0.648,
+    "lag_method": "xcorr",
+    "drive_signal": "current_a",
+    "grid_hz": 50.0,
+    "n_rows": 3196
+  },
+  "ulog": {
+    "name": "log_3_2026-7-24-17-11-46.ulg",
+    "rel_path": "raw/2026-07-24/ulog/log_3_2026-7-24-17-11-46.ulg",
+    "fc_start": 745.85,
+    "fc_end": 805.76,
+    "matched_by": "epoch_containment",
+    "fc_to_epoch_offset": 1784877475.1427927
+  },
+  "voltage_noload_v": {
+    "before_v": 12.501,
+    "after_v": 12.121,
+    "drop_v": 0.38,
+    "n_before": 190,
+    "n_after": 190,
+    "v": 12.501,
+    "source": "log_3_2026-7-24-17-11-46.ulg"
+  },
+  "steady_state": [
+    {
+      "phase": "A1850_B1850",
+      "n": 1498,
+      "a_cmd_us": 1850.0,
+      "b_cmd_us": 1850.0,
+      "voltage_v": 11.3182,
+      "current_a": 25.0135,
+      "power_w": 283.1136,
+      "thrust_N": 14.6441,
+      "torque_Nm": 0.0116,
+      "efficiency_N_per_W": 0.05173
+    }
+  ]
+}

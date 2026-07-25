@@ -1,0 +1,24 @@
+{
+  "name": "thrustonly_1834",
+  "session": "2026-07-20_s2",
+  "start_local": "2026-07-20 18:34:15",
+  "duration_s": 49.3,
+  "label": "",
+  "flags": [
+    "no_pwm_data"
+  ],
+  "sources": {
+    "loadcell": "raw/2026-07-20/loadcell/data_20260720_183415.csv"
+  },
+  "alignment": {
+    "lag_s": null,
+    "lag_corr": null,
+    "lag_method": null,
+    "drive_signal": null,
+    "grid_hz": 50.0,
+    "n_rows": 2466
+  },
+  "ulog": null,
+  "voltage_noload_v": null,
+  "steady_state": []
+}

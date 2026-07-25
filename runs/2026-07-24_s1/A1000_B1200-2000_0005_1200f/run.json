@@ -1,0 +1,24 @@
+{
+  "name": "A1000_B1200-2000_0005_1200f",
+  "session": "2026-07-24_s1",
+  "start_local": "2026-07-24 00:05:35",
+  "duration_s": 91.2,
+  "label": "1200f",
+  "flags": [
+    "no_thrust_data"
+  ],
+  "sources": {
+    "pwm_map": "raw/2026-07-24/pwm/thrust_map_1784819132.1200F.csv"
+  },
+  "alignment": {
+    "lag_s": null,
+    "lag_corr": null,
+    "lag_method": null,
+    "drive_signal": null,
+    "grid_hz": 50.0,
+    "n_rows": 4560
+  },
+  "ulog": null,
+  "voltage_noload_v": null,
+  "steady_state": []
+}

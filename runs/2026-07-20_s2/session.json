@@ -1,0 +1,11 @@
+{
+  "name": "2026-07-20_s2",
+  "date": "2026-07-20",
+  "start_local": "2026-07-20 18:34:15",
+  "n_runs": 2,
+  "ulogs": [],
+  "runs": [
+    "thrustonly_1834",
+    "thrustonly_1837"
+  ]
+}
