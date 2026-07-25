@@ -1,0 +1,14 @@
+# --- Load-cell GUI (gui.py) : runs on the bench laptop ---
+PySide6>=6.0
+pyserial>=3.5
+pyqtgraph>=0.13
+
+# --- Viewer (plot.py) and analysis ---
+matplotlib>=3.8
+numpy>=1.24
+
+# --- Sweep logger (pwm_thrust_map.py) : runs on the Raspberry Pi ---
+pymavlink>=2.4
+
+# --- Organizer / ulog analysis (tvctools) ---
+pyulog>=1.0

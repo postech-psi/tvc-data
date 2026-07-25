@@ -48,6 +48,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,16 +97,36 @@ DEFAULT_CFG = {
     "resend_hz": 5.0,           # ACTUATOR_TEST 재전송 주기(타임아웃으로 값이 풀리지 않게)
     "timeout_s": 1.0,           # 각 명령의 타임아웃(초). 재전송 간격(1/resend_hz)보다 커야 함
     "warmup_s": 3.0,            # 시작 시 ESC arming 을 위해 최소값(0)으로 잠깐 대기
+    # --- 측정 설계(교란 제거용) ---
+    "idle_s": 10.0,             # 스윕 전/후 '무부하' 구간을 기록(양 채널 1000µs, 전류≈0).
+                                # 여기서 읽은 전압이 배터리의 '실제 잔량'(SoC)이다.
+                                # 부하 중 전압은 IR 강하가 섞여 있어 런끼리 비교 불가.
+    "servo_hz": 50,             # SERVO_OUTPUT_RAW 요청 주기. CSV 한 줄이 이 메시지마다 나온다.
+    "bat_hz": 20,               # BATTERY_STATUS 요청 주기
+    "esc_hz": 20,               # ESC_STATUS(RPM) 요청 주기. 미지원 ESC면 그냥 안 온다.
+    "min_voltage_v": 0.0,       # 이 전압 아래로 내려가면 즉시 중단(리포 보호). 3S면 9.9 권장.
+    "randomize": False,         # 계단 순서 섞기 → 전압 드리프트와 PWM의 상관을 끊는다
+    "bracket": False,           # 첫 조합을 맨 뒤에 반복 → 스윕 중 드리프트를 직접 측정
+    "seed": 0,                  # randomize 재현용 시드(0이면 매번 다름)
+    # --- 아래는 데이터 정리용(측정 자체에는 영향 없음) ---
+    "out_dir": "",              # CSV 저장 폴더(빈 값이면 현재 폴더). 예: "raw/2026-07-25"
+    "notes": "",                # 이 런에 대한 자유 메모
+    "prop": "",                 # 프로펠러 사양
+    "battery": "",              # 배터리 사양(셀 수/용량 등)
 }
 
 # CSV 컬럼(헤더). pwm_thrust_grid.py 와 '동일' + 맨 뒤에 sweep_idx(몇 번째 스윕인지) 한 개만 추가.
 #   servo1~8_raw = 각 물리 출력 채널의 '실제' PWM(µs) 실측값.
 #   → 로드셀 로그와 t_epoch(에폭 시각)로 병합할 때 기존 파이프라인과 그대로 호환된다.
+#   esc1~4_rpm   = ESC 텔레메트리(ESC_STATUS #291)의 실측 RPM. 지원 ESC가 없으면 빈 칸.
+#     → RPM 이 있으면 '전압이 추력을 바꾼다'와 '전압이 RPM 을, RPM 이 추력을 바꾼다'를
+#       분리할 수 있다. 지금 데이터로는 이 둘이 섞여 있어 구분이 불가능하다.
 CSV_HEADER = (
     ["t_epoch", "t_fc_us", "phase",
      "a_cmd_us", "b_cmd_us", "a_cmd_norm", "b_cmd_norm"]
     + [f"servo{i}_raw" for i in range(1, 9)]
     + ["voltage_v", "current_a", "sweep_idx"]
+    + [f"esc{i}_rpm" for i in range(1, 5)]
 )
 
 
@@ -160,18 +181,31 @@ def check_armed(conn, timeout=3.0):
     return bool(hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 
 
-def request_rates(conn, servo_hz=20, bat_hz=10):
+def request_rates(conn, servo_hz=50, bat_hz=20, esc_hz=20):
     """필요한 메시지의 송신 주기를 SET_MESSAGE_INTERVAL로 올린다(공식 권장 방식).
 
     - SERVO_OUTPUT_RAW: 실제 출력 PWM(µs)  → 우리가 기록할 '진리값'
     - BATTERY_STATUS  : 배터리 전압/전류. QGroundControl이 화면에 쓰는 바로 그 메시지라
                         여기서 읽으면 QGC 표시값과 동일해진다(캘리브레이션은 FC에서 적용됨).
+    - ESC_STATUS      : ESC 텔레메트리(RPM). DShot/BLHeli 등 텔레메트리 지원 ESC + PX4
+                        설정(예: DSHOT_TEL_CFG)이 있어야 나온다. 없으면 그냥 안 올 뿐이라
+                        요청해도 손해는 없다.
     interval(µs) = 1e6 / rate_hz
+
+    대역폭: 921600 baud ≈ 92 kB/s. 위 세 메시지를 50/20/20 Hz 로 받아도
+    (49B*50 + 66B*20 + 46B*20) ≈ 4.7 kB/s 로 약 5% 에 불과하다. 즉 상한은
+    시리얼 대역폭이 아니라 PX4 내부 발행 주기와 MAV_x_RATE 설정이다.
     """
-    for msg_id, hz in (
+    targets = [
         (mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, servo_hz),
         (mavutil.mavlink.MAVLINK_MSG_ID_BATTERY_STATUS, bat_hz),
-    ):
+    ]
+    esc_id = getattr(mavutil.mavlink, "MAVLINK_MSG_ID_ESC_STATUS", 291)
+    targets.append((esc_id, esc_hz))
+
+    for msg_id, hz in targets:
+        if not hz or hz <= 0:
+            continue
         conn.mav.command_long_send(
             conn.target_system, conn.target_component,
             mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
@@ -278,15 +312,54 @@ def frange_us(start, end, step):
     return values
 
 
+def write_run_sidecar(out_path, cfg, t_start):
+    """측정 설정을 CSV 옆에 <이름>.run.json 으로 남긴다.
+
+    CSV 에는 결과(phase 열)만 들어가고 dwell_s·repeats·격자 범위 같은 '어떻게 측정했는지'는
+    사라진다. 나중에 런을 재현하거나 비교하려면 이 정보가 꼭 필요하므로 따로 저장한다.
+    device·baud 같은 접속 정보는 데이터 분석과 무관하므로 제외.
+    """
+    meta = {k: cfg.get(k) for k in (
+        "a_start", "a_end", "a_step", "b_start", "b_end", "b_step",
+        "repeats", "dwell_s", "warmup_s", "resend_hz",
+        "idle_s", "randomize", "bracket", "seed",
+        "servo_hz", "bat_hz", "esc_hz", "min_voltage_v",
+        "notes", "prop", "battery")}
+    meta["t_start_epoch"] = t_start
+    meta["csv"] = os.path.basename(out_path)
+    try:
+        with open(os.path.splitext(out_path)[0] + ".run.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass   # 메타 저장 실패가 측정을 막으면 안 된다
+
+
 def build_combos(cfg):
     """격자 범위(cfg)로 (A,B) 조합 목록을 만든다. A가 바깥, B가 안쪽(= grid 파일과 동일 순서).
 
     A·B 시작=끝 이면 각 축이 1개 → 조합 1개("한 조합만" 케이스).
     이 목록 순서가 곧 '계단'을 올라가는 순서다.
+
+    randomize=True 면 순서를 섞는다. 배터리는 스윕 도중 계속 소모되므로, 순서대로
+    올라가면 '전압 하락'과 'PWM 상승'이 완전히 겹쳐서 둘을 구분할 수 없다(교란).
+    순서를 섞으면 전압 드리프트가 PWM과 무상관이 되어 계통 오차가 아니라 산포로 바뀐다.
+
+    bracket=True 면 첫 조합을 맨 뒤에 한 번 더 넣는다. 처음과 마지막의 같은 조합을
+    비교하면 그 스윕 동안 일어난 드리프트(배터리·발열)를 직접 측정할 수 있다.
     """
     a_vals = frange_us(cfg["a_start"], cfg["a_end"], cfg["a_step"])
     b_vals = frange_us(cfg["b_start"], cfg["b_end"], cfg["b_step"])
-    return [(a, b) for a in a_vals for b in b_vals]
+    combos = [(a, b) for a in a_vals for b in b_vals]
+
+    if cfg.get("randomize"):
+        seed = cfg.get("seed")
+        rng = random.Random(seed if seed else None)
+        rng.shuffle(combos)
+
+    if cfg.get("bracket") and len(combos) > 1:
+        combos = combos + [combos[0]]
+
+    return combos
 
 
 # ============================================================================
@@ -349,6 +422,10 @@ class Controller:
         self.last_ping = 0.0
         self.watchdog_enabled = False
         self.start_time = None
+        # 실제로 도달한 수신 주기를 세어 둔다. 요청한 Hz 가 그대로 나온다는 보장이
+        # 없기 때문(PX4 내부 발행 주기·MAV_x_RATE 상한에 걸리면 조용히 낮아진다).
+        self.rx_counts = {}
+        self.rx_since = time.time()
         self.status = self._blank_status()
 
     @staticmethod
@@ -369,6 +446,15 @@ class Controller:
 
     def is_running(self):
         return self.thread is not None and self.thread.is_alive()
+
+    def note_rx(self, kind):
+        """메시지 수신 1건 기록(실측 주기 계산용). 락 없이 쓰기엔 단순 증가라 안전."""
+        self.rx_counts[kind] = self.rx_counts.get(kind, 0) + 1
+
+    def achieved_rates(self):
+        """지금까지 실제로 받은 평균 주기(Hz). 요청값과 비교해 경고하는 데 쓴다."""
+        dt = max(1e-6, time.time() - self.rx_since)
+        return {k: round(n / dt, 1) for k, n in self.rx_counts.items()}
 
     def set_status(self, **kw):
         with self.lock:
@@ -433,36 +519,59 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
             send_actuator_test(conn, MOTOR_B_FUNC, b_norm, cfg["timeout_s"])
             next_send = now + 1.0 / cfg["resend_hz"]
 
-        # (3) 들어오는 메시지를 짧게 받아 처리
+        # (3) 들어오는 메시지를 '버퍼가 빌 때까지' 처리한다.
+        # 한 번에 한 개만 꺼내면 요청 주기를 올렸을 때 수신이 생성 속도를 못 따라가
+        # 시리얼 버퍼에 밀리고, t_epoch 이 실제 수신 시각보다 점점 뒤처진다.
+        # 먼저 블로킹으로 하나 기다린 뒤, 남아 있는 것을 논블로킹으로 모두 비운다.
         msg = conn.recv_match(blocking=True, timeout=0.05)
-        if msg is None:
-            continue
-        mtype = msg.get_type()
+        while msg is not None:
+            mtype = msg.get_type()
 
-        if mtype == "BATTERY_STATUS" and getattr(msg, "id", 0) == 0:
-            # QGC와 동일한 소스(주 배터리 id=0의 BATTERY_STATUS)에서 전압/전류 계산
-            v, c = read_battery(msg)
-            if v is not None:
-                latest["voltage_v"] = v
-            if c is not None:
-                latest["current_a"] = c
-            ctl.set_status(voltage_v=latest["voltage_v"], current_a=latest["current_a"])
+            if mtype == "BATTERY_STATUS" and getattr(msg, "id", 0) == 0:
+                # QGC와 동일한 소스(주 배터리 id=0의 BATTERY_STATUS)에서 전압/전류 계산
+                v, c = read_battery(msg)
+                if v is not None:
+                    latest["voltage_v"] = v
+                if c is not None:
+                    latest["current_a"] = c
+                ctl.set_status(voltage_v=latest["voltage_v"], current_a=latest["current_a"])
+                ctl.note_rx("battery")
+                # 저전압 컷오프 — 리포 보호. 반복 방전 시험에서 셀당 3.3V 아래로
+                # 내려가면 팩이 상한다. 여기서 멈추면 '측정 실패'지만 배터리는 산다.
+                floor = cfg.get("min_voltage_v") or 0
+                if floor and latest["voltage_v"] and latest["voltage_v"] < floor:
+                    raise AbortMeasurement(
+                        f"저전압 컷오프: {latest['voltage_v']:.2f}V < {floor:.2f}V")
 
-        elif mtype == "SERVO_OUTPUT_RAW":
-            servo = [getattr(msg, f"servo{i}_raw") for i in range(1, 9)]   # 실측 PWM 8채널
-            ctl.set_status(servo_raw=servo)   # GUI 실시간 표시용
-            if record:
-                # 실제 출력 PWM(µs) + 명령값(µs/정규화) + 최근 전압/전류 + 스윕번호를 한 줄로 기록
-                row = [
-                    time.time(),        # t_epoch: 라즈베리파이 수신 시각(로드셀 로그와 병합 기준)
-                    msg.time_usec,      # t_fc_us: 픽스호크 측 시각
-                    phase,              # 어느 조합인지 식별 문자열(예: A1000_B1200)
-                    a_us, b_us,         # 명령 µs
-                    round(a_norm, 4), round(b_norm, 4),   # 명령 정규화값
-                ]
-                row += servo
-                row += [latest["voltage_v"], latest["current_a"], sweep_idx]
-                writer.writerow(row)
+            elif mtype == "ESC_STATUS":
+                # index 는 이 메시지가 담고 있는 첫 ESC 번호(0,4,8...). rpm 은 4개씩 온다.
+                base = int(getattr(msg, "index", 0))
+                for k, rpm in enumerate(getattr(msg, "rpm", [])[:4]):
+                    slot = base + k
+                    if 0 <= slot < 4:
+                        latest["esc_rpm"][slot] = rpm
+                ctl.set_status(esc_rpm=list(latest["esc_rpm"]))
+                ctl.note_rx("esc")
+
+            elif mtype == "SERVO_OUTPUT_RAW":
+                servo = [getattr(msg, f"servo{i}_raw") for i in range(1, 9)]   # 실측 PWM 8채널
+                ctl.set_status(servo_raw=servo)   # GUI 실시간 표시용
+                ctl.note_rx("servo")
+                if record:
+                    # 실제 출력 PWM(µs) + 명령값(µs/정규화) + 최근 전압/전류 + 스윕번호를 한 줄로 기록
+                    row = [
+                        time.time(),        # t_epoch: 라즈베리파이 수신 시각(로드셀 로그와 병합 기준)
+                        msg.time_usec,      # t_fc_us: 픽스호크 측 시각
+                        phase,              # 어느 조합인지 식별 문자열(예: A1000_B1200)
+                        a_us, b_us,         # 명령 µs
+                        round(a_norm, 4), round(b_norm, 4),   # 명령 정규화값
+                    ]
+                    row += servo
+                    row += [latest["voltage_v"], latest["current_a"], sweep_idx]
+                    row += ["" if r is None else r for r in latest["esc_rpm"]]
+                    writer.writerow(row)
+
+            msg = conn.recv_match(blocking=False)   # 남은 것 비우기
 
 
 # ============================================================================
@@ -483,7 +592,8 @@ def run_measurement(ctl, cfg):
                        message=f"연결됨: system={conn.target_system}, comp={conn.target_component}")
 
         # 2) 메시지 주기 상향 + 시동 여부 확인(시동 상태면 거부)
-        request_rates(conn)
+        request_rates(conn, cfg.get("servo_hz", 50),
+                      cfg.get("bat_hz", 20), cfg.get("esc_hz", 20))
         armed = check_armed(conn)
         if armed is True:
             raise RuntimeError("지금 '시동(armed)' 상태입니다. 시동 해제 후 실행하세요")
@@ -496,10 +606,19 @@ def run_measurement(ctl, cfg):
         # 3) 격자/조합 준비 + CSV 열기
         combos = build_combos(cfg)
         point_total = len(combos) * cfg["repeats"]
-        out_path = f"{OUT_PREFIX}_{int(time.time())}.csv"
+        t_start = int(time.time())
+        out_dir = (cfg.get("out_dir") or "").strip()
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"{OUT_PREFIX}_{t_start}.csv")
         ctl.set_status(combo_total=len(combos), sweep_total=cfg["repeats"],
                        point_total=point_total, out_path=out_path)
-        latest = {"voltage_v": None, "current_a": None}
+        latest = {"voltage_v": None, "current_a": None,
+                  "esc_rpm": [None, None, None, None]}
+
+        # 설정값(dwell/repeats/격자 범위 등)은 CSV 안에 남지 않는다 → 옆에 사이드카로 저장.
+        # 나중에 tvctools 가 이 파일을 읽어 런 정보를 복원한다.
+        write_run_sidecar(out_path, cfg, t_start)
 
         fp = open(out_path, "w", newline="")
         writer = csv.writer(fp)
@@ -513,6 +632,19 @@ def run_measurement(ctl, cfg):
         ctl.set_status(state="running", message=f"ESC 워밍업 {cfg['warmup_s']}s (최소값 유지)")
         hold_and_log(ctl, conn, writer, latest, cfg,
                      PWM_MIN_US, PWM_MIN_US, "warmup", cfg["warmup_s"], record=False, sweep_idx=0)
+
+        # 4-1b) 무부하 구간을 '기록'한다(phase="idle_pre").
+        # 양 채널 1000µs·전류≈0 이므로 여기 전압이 곧 배터리 실제 잔량(SoC)이다.
+        # 예전에는 이 구간이 기록되지 않아 SoC를 ulog 에서만 얻을 수 있었다.
+        if cfg.get("idle_s", 0) > 0:
+            ctl.set_status(message=f"무부하 기준 전압 측정 {cfg['idle_s']}s")
+            hold_and_log(ctl, conn, writer, latest, cfg,
+                         PWM_MIN_US, PWM_MIN_US, "idle_pre", cfg["idle_s"],
+                         record=True, sweep_idx=0)
+
+        # 주기 측정은 여기서부터(연결·워밍업 구간을 빼야 실제 스윕 주기가 나온다)
+        ctl.rx_counts = {}
+        ctl.rx_since = time.time()
 
         # 4-2) 계단식 스윕: 격자 전체를 repeats 번 반복. 스텝 사이에 정지/안정화/간격 없음.
         point_done = 0
@@ -543,7 +675,30 @@ def run_measurement(ctl, cfg):
 
         # 4-3) 정상 종료: 마지막 값에서 서서히 정지
         ramp_down(conn, last_a, last_b, cfg["timeout_s"])
-        ctl.set_status(state="done", message=f"완료 — 저장: {out_path}")
+
+        # 4-4) 스윕 후 무부하 전압(phase="idle_post").
+        # idle_pre 와의 차이가 이 런에서 실제로 소모된 배터리 양이다.
+        # 주의: 팩은 부하 직후 수십 초에 걸쳐 회복하므로, 바로 뒤 값은 완전히
+        # 쉰 OCV 보다 조금 낮게 나온다.
+        if cfg.get("idle_s", 0) > 0:
+            ctl.set_status(message=f"무부하 종료 전압 측정 {cfg['idle_s']}s")
+            hold_and_log(ctl, conn, writer, latest, cfg,
+                         PWM_MIN_US, PWM_MIN_US, "idle_post", cfg["idle_s"],
+                         record=True, sweep_idx=0)
+
+        # 실제로 받은 주기를 보고한다. 요청한 Hz 가 그대로 나오는 경우는 오히려 드물다
+        # (PX4 내부 토픽 발행 주기, MAV_x_RATE 대역 상한에 걸리면 조용히 낮아진다).
+        rates = ctl.achieved_rates()
+        want = (cfg.get("servo_hz", 50), cfg.get("bat_hz", 20), cfg.get("esc_hz", 20))
+        got = (rates.get("servo", 0), rates.get("battery", 0), rates.get("esc", 0))
+        rate_msg = ("실측 주기 servo %.0f/%d Hz, battery %.0f/%d Hz, esc %.0f/%d Hz"
+                    % (got[0], want[0], got[1], want[1], got[2], want[2]))
+        if got[2] == 0:
+            rate_msg += " — ESC 텔레메트리 없음(RPM 미기록)"
+        if got[0] < 0.7 * want[0]:
+            rate_msg += " — servo 주기가 요청보다 낮음: PX4 발행 주기/MAV_x_RATE 확인"
+        ctl.set_status(achieved_rates=rates)
+        ctl.set_status(state="done", message=f"완료 — 저장: {out_path} · {rate_msg}")
 
     except AbortMeasurement as ab:
         # STOP 버튼 또는 watchdog: 사용자/안전 중단
