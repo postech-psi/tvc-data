@@ -18,7 +18,9 @@
     "lag_method": "xcorr",
     "drive_signal": "current_a",
     "grid_hz": 50.0,
-    "n_rows": 3198
+    "n_rows": 3198,
+    "edge_lag_s": null,
+    "edge_jump_n": null
   },
   "ulog": {
     "name": "log_3_2026-7-24-17-11-46.ulg",
@@ -29,13 +31,15 @@
     "fc_to_epoch_offset": 1784877475.1427927
   },
   "voltage_noload_v": {
-    "before_v": 11.305,
-    "after_v": 11.157,
-    "drop_v": 0.149,
-    "n_before": 190,
-    "n_after": 190,
-    "v": 11.305,
-    "source": "log_3_2026-7-24-17-11-46.ulg"
+    "before_v": 11.299,
+    "after_v": 11.194,
+    "n_before": 584,
+    "n_after": 584,
+    "drop_v": 0.105,
+    "v": 11.299,
+    "source": "log_3_2026-7-24-17-11-46.ulg",
+    "ulog_run_index": 9,
+    "idle_before_s": 202.6
   },
   "steady_state": [
     {

@@ -29,13 +29,38 @@ out/                        analysis products                      (generated)
   coax_grid.png             thrust and torque over the (A, B) plane
   voltage_sag.csv/.png      thrust vs battery state of charge
 
+bench/                      new-format acquisition runs             (generated)
+  <YYYY-MM-DD_HHMMSS>/      one directory per run -- see docs/ACQUISITION.md
+
 docs/SETUP.md               what measures what -- read this first
+docs/PREPROCESSING.md       every step from raw file to map point
+docs/ACQUISITION.md         the tvcbench rewrite: one clock, one logger
 docs/DATA_INVENTORY.md      what exists, by date, with voltage status
-tvctools/                   the pipeline
-gui.py                      load-cell acquisition (bench laptop)
-pwm_thrust_map.py           sweep runner + web GUI (Raspberry Pi)
+tvctools/                   the analysis pipeline
+tvcbench/                   acquisition (Raspberry Pi)
+plans/                      run plans -- a run is a checked-in file
+tests/                      runs without hardware, via simulated sources
+gui.py                      load-cell acquisition (bench laptop, superseded)
+pwm_thrust_map.py           sweep runner + web GUI (Raspberry Pi, superseded)
 pwm_map_gui.html            its control panel
 plot.py                     standalone load-cell viewer
+```
+
+## Two generations
+
+`pwm_thrust_map.py` + `gui.py` produced everything under `raw/` and `runs/`, with
+the load cell on the bench laptop and the commands on the Pi — three clocks, and
+an entire post-hoc alignment stage to reconcile them.
+
+`tvcbench` replaces both. The load cell moves onto the Pi, so force and command
+share one clock and no alignment is needed. Output goes to `bench/` in a new
+format; the old pipeline and its data are untouched.
+See [docs/ACQUISITION.md](docs/ACQUISITION.md).
+
+```bash
+python -m tvcbench selftest                       # hardware gate, before every session
+python -m tvcbench plan show plans/coax_grid.yaml
+python -m tvcbench run plans/coax_grid.yaml
 ```
 
 Run folder names say what the test was: `A1400_B1000-2000_0051` means rotor A
@@ -90,11 +115,16 @@ throttle. `index` reports these under "By design", not as faults. Full detail in
 
 ## How alignment works
 
+Full detail of every processing step is in
+[docs/PREPROCESSING.md](docs/PREPROCESSING.md).
+
 The stand logs free-running MCU uptime, the Pi logs UTC epoch. The load-cell
-filename anchors it to ~1 s, then cross-correlating thrust against the Pi's
-current recovers the rest. One lag per load-cell file, recorded in `run.json` as
-`lag_s` / `lag_corr`; a peak too weak to trust is reported as `weak` with lag 0
-rather than a confident wrong number.
+filename anchors it to ~1 s, then cross-correlation recovers the rest: thrust
+(`−Fz`) against the **commanded PWM** on sweeps, falling back to **current** on
+constant holds where the command has no variance to correlate. One lag per
+load-cell file, recorded in `run.json` as `lag_s` / `lag_corr` / `drive_signal`;
+a peak too weak to trust is reported as `weak` with lag 0 rather than a confident
+wrong number.
 
 Flight-controller logs have no usable absolute time — `time_ref_utc` is 0 and
 the filenames are minutes wrong — so they are dated from the `t_fc_us` /

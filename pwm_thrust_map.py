@@ -78,6 +78,9 @@ STOP_VALUE = 0.0
 WATCHDOG_TIMEOUT_S = 2.0  # GUI(브라우저)가 이 시간 동안 status를 안 물어보면 '끊김'으로 보고 즉시 정지
 RAMP_STEPS = 8            # '서서히 정지(램프다운)' 단계 수 (맨 마지막 종료에만 사용)
 RAMP_S = 0.4              # 램프다운 전체 소요 시간(초)
+# 수신 버퍼를 한 번에 비울 최대 메시지 수. 이 상한이 있어야 메시지가 아무리 빨리
+# 들어와도 주기적으로 바깥 루프(=deadline·STOP·watchdog 확인)로 돌아온다.
+MAX_DRAIN_PER_LOOP = 40
 
 # 서버 기본 포트/호스트. 호스트는 localhost(127.0.0.1)만 열어 라즈베리파이 자기 자신에서만 접속(안전).
 DEFAULT_HOST = "127.0.0.1"
@@ -271,35 +274,54 @@ def stop_motors_immediate(conn, timeout_s):
         time.sleep(0.05)
 
 
-def ramp_down(conn, a_us, b_us, timeout_s):
+def _ramp_step(conn, a, b, timeout_s, log=None, phase="ramp"):
+    """램프 한 칸: 명령을 보내고, 로깅 컨텍스트가 있으면 그 구간도 '기록'한다.
+
+    램프 구간을 기록해야 하는 이유 — 여기가 추력이 가장 크게 변하는 지점이다.
+    스윕 종료 램프다운은 추력을 ~9N 움직이는데(노이즈 0.7N 대비 13σ), 예전에는
+    time.sleep 만 하고 아무것도 안 남겨서 이 '가장 뚜렷한 에지'가 CSV에 없었다.
+    로드셀 로그와 시각을 맞출 때 가장 쓸모 있는 특징이 바로 이 구간이다.
+    """
+    if log is not None:
+        # hold_and_log 이 명령 전송 + 수신 기록을 함께 처리한다
+        hold_and_log(log["ctl"], conn, log["writer"], log["latest"], log["cfg"],
+                     int(round(a)), int(round(b)), phase,
+                     RAMP_S / RAMP_STEPS, record=True, sweep_idx=log["sweep_idx"])
+    else:
+        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s)
+        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s)
+        time.sleep(RAMP_S / RAMP_STEPS)
+
+
+def ramp_down(conn, a_us, b_us, timeout_s, log=None):
     """[정상 종료] 현재 (a_us,b_us)에서 최소값(1000µs)까지 여러 단계로 '서서히' 내린다.
 
     측정을 정상적으로 다 마쳤을 때 딱 한 번 사용 — 급격한 전류 컷·기계적 충격 완화용.
     (긴급 상황에는 쓰지 않는다. 긴급은 stop_motors_immediate 로 즉시 끈다)
+
+    log 을 주면 이 구간을 phase="ramp_down" 으로 기록한다. 중단(abort) 경로에서는
+    writer 가 이미 닫혔을 수 있으므로 log=None 으로 호출해 기록을 건너뛴다.
     """
     for i in range(1, RAMP_STEPS + 1):
         frac = 1.0 - i / float(RAMP_STEPS)        # 1 → 0 으로 감소
         a = PWM_MIN_US + (a_us - PWM_MIN_US) * frac
         b = PWM_MIN_US + (b_us - PWM_MIN_US) * frac
-        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s)
-        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s)
-        time.sleep(RAMP_S / RAMP_STEPS)
+        _ramp_step(conn, a, b, timeout_s, log, "ramp_down")
 
 
-def ramp_to(conn, from_a, from_b, to_a, to_b, timeout_s):
+def ramp_to(conn, from_a, from_b, to_a, to_b, timeout_s, log=None):
     """[정상 전환] (from_a,from_b) → (to_a,to_b) 로 여러 단계에 걸쳐 '서서히' 이동한다.
 
     한 세트(스윕)가 끝나고 다음 세트를 시작할 때, PWM을 한 번에 확 줄이지 않고
     부드럽게 내려서(또는 올려서) 새 세트를 시작하기 위한 용도.
     RAMP_S초 동안 RAMP_STEPS 단계로 선형 보간한다.
+    log 을 주면 phase="ramp_between" 으로 기록해 스윕 사이에 공백이 남지 않게 한다.
     """
     for i in range(1, RAMP_STEPS + 1):
         frac = i / float(RAMP_STEPS)              # 0 → 1
         a = from_a + (to_a - from_a) * frac
         b = from_b + (to_b - from_b) * frac
-        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s)
-        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s)
-        time.sleep(RAMP_S / RAMP_STEPS)
+        _ramp_step(conn, a, b, timeout_s, log, "ramp_between")
 
 
 def frange_us(start, end, step):
@@ -523,8 +545,14 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
         # 한 번에 한 개만 꺼내면 요청 주기를 올렸을 때 수신이 생성 속도를 못 따라가
         # 시리얼 버퍼에 밀리고, t_epoch 이 실제 수신 시각보다 점점 뒤처진다.
         # 먼저 블로킹으로 하나 기다린 뒤, 남아 있는 것을 논블로킹으로 모두 비운다.
+        # 한 번에 비우는 개수에 상한을 둔다. 상한이 없으면 메시지가 처리 속도보다
+        # 빨리 들어올 때 이 루프에서 빠져나오지 못하고, 그 동안 deadline 과
+        # check_abort()(STOP 버튼·watchdog)를 확인하지 못한다. 모터가 도는 중이므로
+        # 안전상 반드시 주기적으로 바깥 루프로 돌아와야 한다.
         msg = conn.recv_match(blocking=True, timeout=0.05)
-        while msg is not None:
+        drained = 0
+        while msg is not None and drained < MAX_DRAIN_PER_LOOP:
+            drained += 1
             mtype = msg.get_type()
 
             if mtype == "BATTERY_STATUS" and getattr(msg, "id", 0) == 0:
@@ -670,11 +698,16 @@ def run_measurement(ctl, cfg):
                 first_a, first_b = combos[0]
                 ctl.set_status(message=f"스윕 {r} 종료 → 다음 스윕 준비(서서히 감속)")
                 ctl.check_abort()
-                ramp_to(conn, last_a, last_b, first_a, first_b, cfg["timeout_s"])
+                ramp_to(conn, last_a, last_b, first_a, first_b, cfg["timeout_s"],
+                        log={"ctl": ctl, "writer": writer, "latest": latest,
+                             "cfg": cfg, "sweep_idx": r})
                 last_a, last_b = first_a, first_b
 
-        # 4-3) 정상 종료: 마지막 값에서 서서히 정지
-        ramp_down(conn, last_a, last_b, cfg["timeout_s"])
+        # 4-3) 정상 종료: 마지막 값에서 서서히 정지.
+        # 이 구간을 기록해야 추력이 크게 떨어지는 '가장 뚜렷한 에지'가 CSV에 남는다.
+        ramp_down(conn, last_a, last_b, cfg["timeout_s"],
+                  log={"ctl": ctl, "writer": writer, "latest": latest,
+                       "cfg": cfg, "sweep_idx": cfg["repeats"]})
 
         # 4-4) 스윕 후 무부하 전압(phase="idle_post").
         # idle_pre 와의 차이가 이 런에서 실제로 소모된 배터리 양이다.

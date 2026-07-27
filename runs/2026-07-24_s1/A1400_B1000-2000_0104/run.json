@@ -13,12 +13,15 @@
     "loadcell": "raw/2026-07-24/loadcell/data_20260724_010404, 1400.csv"
   },
   "alignment": {
-    "lag_s": -0.85,
-    "lag_corr": 0.557,
+    "lag_s": -1.1,
+    "lag_corr": 0.633,
     "lag_method": "xcorr",
-    "drive_signal": "current_a",
+    "drive_signal": "b_cmd_us",
     "grid_hz": 50.0,
-    "n_rows": 9061
+    "n_rows": 9061,
+    "edge_lag_s": -0.657,
+    "edge_jump_n": 7.48,
+    "edge_vs_xcorr_s": 0.443
   },
   "ulog": {
     "name": "log_1_2026-7-24-01-16-18.ulg",
@@ -30,12 +33,14 @@
   },
   "voltage_noload_v": {
     "before_v": 11.604,
-    "after_v": 11.382,
-    "drop_v": 0.222,
-    "n_before": 141,
-    "n_after": 190,
+    "after_v": 11.411,
+    "n_before": 121,
+    "n_after": 585,
+    "drop_v": 0.193,
     "v": 11.604,
-    "source": "log_1_2026-7-24-01-16-18.ulg"
+    "source": "log_1_2026-7-24-01-16-18.ulg",
+    "ulog_run_index": 1,
+    "idle_before_s": 30.0
   },
   "steady_state": [
     {
@@ -46,9 +51,9 @@
       "voltage_v": 11.2289,
       "current_a": 2.226,
       "power_w": 24.9955,
-      "thrust_N": 3.3588,
-      "torque_Nm": -0.0467,
-      "efficiency_N_per_W": 0.13438
+      "thrust_N": 3.1119,
+      "torque_Nm": -0.0485,
+      "efficiency_N_per_W": 0.1245
     },
     {
       "phase": "A1400_B1100",
@@ -58,9 +63,9 @@
       "voltage_v": 11.2676,
       "current_a": 2.5441,
       "power_w": 28.6679,
-      "thrust_N": 3.3755,
-      "torque_Nm": -0.0422,
-      "efficiency_N_per_W": 0.11774
+      "thrust_N": 3.4087,
+      "torque_Nm": -0.0418,
+      "efficiency_N_per_W": 0.1189
     },
     {
       "phase": "A1400_B1200",
@@ -70,9 +75,9 @@
       "voltage_v": 11.267,
       "current_a": 3.1844,
       "power_w": 35.882,
-      "thrust_N": 3.9624,
-      "torque_Nm": -0.0302,
-      "efficiency_N_per_W": 0.11043
+      "thrust_N": 3.9921,
+      "torque_Nm": -0.0294,
+      "efficiency_N_per_W": 0.11126
     },
     {
       "phase": "A1400_B1300",
@@ -82,9 +87,9 @@
       "voltage_v": 11.2602,
       "current_a": 4.0813,
       "power_w": 45.9587,
-      "thrust_N": 4.6613,
-      "torque_Nm": -0.0185,
-      "efficiency_N_per_W": 0.10142
+      "thrust_N": 4.7123,
+      "torque_Nm": -0.018,
+      "efficiency_N_per_W": 0.10253
     },
     {
       "phase": "A1400_B1400",
@@ -94,9 +99,9 @@
       "voltage_v": 11.2274,
       "current_a": 5.0687,
       "power_w": 56.9115,
-      "thrust_N": 5.3988,
-      "torque_Nm": -0.0065,
-      "efficiency_N_per_W": 0.09486
+      "thrust_N": 5.4242,
+      "torque_Nm": -0.0058,
+      "efficiency_N_per_W": 0.09531
     },
     {
       "phase": "A1400_B1500",
@@ -106,9 +111,9 @@
       "voltage_v": 11.1861,
       "current_a": 6.3413,
       "power_w": 70.9373,
-      "thrust_N": 6.1615,
-      "torque_Nm": 0.0061,
-      "efficiency_N_per_W": 0.08686
+      "thrust_N": 6.2227,
+      "torque_Nm": 0.0071,
+      "efficiency_N_per_W": 0.08772
     },
     {
       "phase": "A1400_B1600",
@@ -118,9 +123,9 @@
       "voltage_v": 11.1425,
       "current_a": 7.756,
       "power_w": 86.4232,
-      "thrust_N": 7.0471,
-      "torque_Nm": 0.0216,
-      "efficiency_N_per_W": 0.08154
+      "thrust_N": 7.1065,
+      "torque_Nm": 0.0224,
+      "efficiency_N_per_W": 0.08223
     },
     {
       "phase": "A1400_B1700",
@@ -130,9 +135,9 @@
       "voltage_v": 11.064,
       "current_a": 10.0146,
       "power_w": 110.8018,
-      "thrust_N": 8.2177,
-      "torque_Nm": 0.0423,
-      "efficiency_N_per_W": 0.07417
+      "thrust_N": 8.2974,
+      "torque_Nm": 0.0439,
+      "efficiency_N_per_W": 0.07489
     },
     {
       "phase": "A1400_B1800",
@@ -142,9 +147,9 @@
       "voltage_v": 10.9625,
       "current_a": 13.0425,
       "power_w": 142.9758,
-      "thrust_N": 9.6184,
-      "torque_Nm": 0.0669,
-      "efficiency_N_per_W": 0.06727
+      "thrust_N": 9.709,
+      "torque_Nm": 0.0684,
+      "efficiency_N_per_W": 0.06791
     },
     {
       "phase": "A1400_B1900",
@@ -154,9 +159,9 @@
       "voltage_v": 10.8386,
       "current_a": 16.8524,
       "power_w": 182.66,
-      "thrust_N": 11.1869,
-      "torque_Nm": 0.0953,
-      "efficiency_N_per_W": 0.06124
+      "thrust_N": 11.2858,
+      "torque_Nm": 0.0969,
+      "efficiency_N_per_W": 0.06179
     },
     {
       "phase": "A1400_B2000",
@@ -166,9 +171,9 @@
       "voltage_v": 10.7176,
       "current_a": 20.6161,
       "power_w": 220.9384,
-      "thrust_N": 12.5726,
-      "torque_Nm": 0.1186,
-      "efficiency_N_per_W": 0.05691
+      "thrust_N": 12.4279,
+      "torque_Nm": 0.1149,
+      "efficiency_N_per_W": 0.05625
     }
   ]
 }

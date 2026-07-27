@@ -184,8 +184,9 @@ def _noload_for_run(run, session, root, cache):
     an IR drop that itself varies with throttle, so it cannot be compared
     between runs.
     """
-    from .battery import load_battery_idle, noload_around, noload_from_pwm_map
+    from .battery import noload_from_pwm_map
     from .schema import load_any
+    from .ulogsegment import load_session, segment, noload_windows
 
     # Preferred source: the Pi's own idle_pre/idle_post rows. When those exist
     # the state of charge needs no ulog at all -- one file, one clock.
@@ -196,17 +197,32 @@ def _noload_for_run(run, session, root, cache):
         if got:
             return got
 
+    # Otherwise the ulog, which is the only continuous record of the idle gaps
+    # between runs. Segmenting it by motor activity gives the *whole* gap to
+    # average over (98-545 s here) instead of a fixed guessed window, and the
+    # result is self-consistent: one run's after-voltage matches the next run's
+    # before-voltage.
     u = _ulog_for_run(run, session)
     if not u:
         return None
     rel = u["rel_path"]
     if rel not in cache:
-        cache[rel] = load_battery_idle(os.path.join(root, rel))
-    got = noload_around(cache[rel], u["fc_start"], u["fc_end"])
-    if not got["before_v"] and not got["after_v"]:
+        sess = load_session(os.path.join(root, rel))
+        segs = segment(sess) if sess else []
+        cache[rel] = (segs, noload_windows(sess, segs) if sess else {})
+    segs, windows = cache[rel]
+    if not segs:
         return None
-    got["v"] = got["before_v"] or got["after_v"]   # state of charge entering the run
+    # Match this run to the ulog interval starting nearest its FC window
+    best = min(segs, key=lambda r: abs(r["fc_start"] - u["fc_start"]))
+    if abs(best["fc_start"] - u["fc_start"]) > 30.0:
+        return None
+    got = dict(windows.get(best["index"]) or {})
+    if not got.get("v"):
+        return None
     got["source"] = u["name"]
+    got["ulog_run_index"] = best["index"]
+    got["idle_before_s"] = best["idle_before_s"]
     return got
 
 
@@ -326,6 +342,12 @@ def _run_dirs(runs_root):
 
 
 def cmd_ulog(args):
+    if args.segment:
+        from .ulogsegment import describe
+        for f in args.files:
+            print(describe(f))
+            print()
+        return 0
     from .ulog import main as ulog_main
     argv = list(args.files)
     if args.outdir:
@@ -367,6 +389,8 @@ def build_parser():
     p = sub.add_parser("ulog", help="analyze .ulg file(s)")
     p.add_argument("files", nargs="+")
     p.add_argument("-o", "--outdir")
+    p.add_argument("--segment", action="store_true",
+                   help="list the runs inside each log with their no-load voltages")
     p.set_defaults(func=cmd_ulog)
     return ap
 

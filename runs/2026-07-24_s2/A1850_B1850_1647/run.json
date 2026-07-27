@@ -27,13 +27,15 @@
     "fc_to_epoch_offset": 1784877475.1427927
   },
   "voltage_noload_v": {
-    "before_v": 11.496,
-    "after_v": 11.33,
-    "drop_v": 0.167,
-    "n_before": 190,
-    "n_after": 190,
-    "v": 11.496,
-    "source": "log_3_2026-7-24-17-11-46.ulg"
+    "before_v": 11.485,
+    "after_v": 11.366,
+    "n_before": 558,
+    "n_after": 585,
+    "drop_v": 0.119,
+    "v": 11.485,
+    "source": "log_3_2026-7-24-17-11-46.ulg",
+    "ulog_run_index": 7,
+    "idle_before_s": 117.6
   },
   "steady_state": []
 }

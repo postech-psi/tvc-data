@@ -43,6 +43,7 @@ except Exception:  # plot.py needs tkinter/matplotlib to import cleanly
         return finite & (np.abs(x - med) <= k * mad)
 
 SETTLE_FRAC = 0.5   # discard this fraction of each step as spin-up transient
+TAIL_GUARD_FRAC = 0.12  # ...and this much off the end, against alignment-lag error
 MIN_SAMPLES = 8
 MAX_AC_LAG = 8      # lags summed for the integrated autocorrelation time
 
@@ -81,7 +82,13 @@ def robust_stats(values, settle_frac=SETTLE_FRAC, reject=True):
     a = a[np.isfinite(a)]
     if a.size == 0:
         return None
-    a = a[int(a.size * settle_frac):]
+    lo = int(a.size * settle_frac)
+    # Trim the tail as well. The alignment lag carries a systematic uncertainty
+    # of ~0.3 s (different Pixhawk reference signals disagree by that much), and
+    # without a trailing guard that error lets the *next* step bleed into the end
+    # of this one -- worth up to 0.144 N, comparable to the reported SEM.
+    hi = a.size - max(1, int(a.size * TAIL_GUARD_FRAC))
+    a = a[lo:hi] if hi - lo >= MIN_SAMPLES else a[lo:]
     if a.size < MIN_SAMPLES:
         return None
     if reject:
@@ -140,17 +147,27 @@ def load_merged(run_dir):
     return cols
 
 
+# Phases that are not held measurement points. idle_pre/idle_post are the
+# no-load windows (state of charge), ramp_* are the smooth transitions --
+# all deliberately recorded, none of them a steady state to average.
+NON_STEP_PHASES = ("idle_pre", "idle_post", "ramp_down", "ramp_between", "warmup")
+
+
 def steps_from_merged(cols):
     """
     Group merged rows into command steps.
 
     Segmentation comes from the commanded phase, never from the thrust signal.
+    Transition and idle phases are skipped: they are recorded on purpose (the
+    ramp carries the largest thrust edge, the idle windows carry the state of
+    charge) but they are not steady states, so averaging them would put
+    meaningless points in the map.
     """
     if not cols or "phase" not in cols:
         return []
     steps, cur = [], None
     for i, ph in enumerate(cols["phase"]):
-        if not ph:
+        if not ph or ph in NON_STEP_PHASES:
             cur = None
             continue
         if cur is None or ph != cur["phase"]:

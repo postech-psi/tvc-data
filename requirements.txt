@@ -12,3 +12,9 @@ pymavlink>=2.4
 
 # --- Organizer / ulog analysis (tvctools) ---
 pyulog>=1.0
+
+# --- Acquisition (tvcbench) : runs on the Raspberry Pi ---
+# Needs pyserial (load cell over USB CDC), pymavlink (Pixhawk) and numpy, all
+# already listed above. pytest is dev-only -- the whole stack is testable with
+# no hardware attached, via the simulated sources.
+pytest>=7.0

@@ -13,12 +13,15 @@
     "loadcell": "raw/2026-07-24/loadcell/data_20260724_005059, 1300.csv"
   },
   "alignment": {
-    "lag_s": -0.8,
-    "lag_corr": 0.541,
+    "lag_s": -1.1,
+    "lag_corr": 0.616,
     "lag_method": "xcorr",
-    "drive_signal": "current_a",
+    "drive_signal": "b_cmd_us",
     "grid_hz": 50.0,
-    "n_rows": 9063
+    "n_rows": 9063,
+    "edge_lag_s": -0.56,
+    "edge_jump_n": 7.71,
+    "edge_vs_xcorr_s": 0.54
   },
   "ulog": null,
   "voltage_noload_v": null,
@@ -31,9 +34,9 @@
       "voltage_v": 11.3789,
       "current_a": 2.2373,
       "power_w": 25.4608,
-      "thrust_N": 3.3247,
-      "torque_Nm": -0.0463,
-      "efficiency_N_per_W": 0.13058
+      "thrust_N": 3.0056,
+      "torque_Nm": -0.0492,
+      "efficiency_N_per_W": 0.11805
     },
     {
       "phase": "A1400_B1100",
@@ -43,9 +46,9 @@
       "voltage_v": 11.4373,
       "current_a": 2.5952,
       "power_w": 29.6845,
-      "thrust_N": 3.2422,
+      "thrust_N": 3.2788,
       "torque_Nm": -0.0435,
-      "efficiency_N_per_W": 0.10922
+      "efficiency_N_per_W": 0.11045
     },
     {
       "phase": "A1400_B1200",
@@ -55,9 +58,9 @@
       "voltage_v": 11.4427,
       "current_a": 3.2718,
       "power_w": 37.44,
-      "thrust_N": 3.8815,
-      "torque_Nm": -0.034,
-      "efficiency_N_per_W": 0.10367
+      "thrust_N": 3.9309,
+      "torque_Nm": -0.0334,
+      "efficiency_N_per_W": 0.10499
     },
     {
       "phase": "A1400_B1300",
@@ -67,9 +70,9 @@
       "voltage_v": 11.4285,
       "current_a": 4.1479,
       "power_w": 47.4061,
-      "thrust_N": 4.6237,
-      "torque_Nm": -0.021,
-      "efficiency_N_per_W": 0.09753
+      "thrust_N": 4.6785,
+      "torque_Nm": -0.0197,
+      "efficiency_N_per_W": 0.09869
     },
     {
       "phase": "A1400_B1400",
@@ -79,9 +82,9 @@
       "voltage_v": 11.3953,
       "current_a": 5.1752,
       "power_w": 58.9761,
-      "thrust_N": 5.3451,
-      "torque_Nm": -0.0081,
-      "efficiency_N_per_W": 0.09063
+      "thrust_N": 5.3917,
+      "torque_Nm": -0.0072,
+      "efficiency_N_per_W": 0.09142
     },
     {
       "phase": "A1400_B1500",
@@ -91,9 +94,9 @@
       "voltage_v": 11.352,
       "current_a": 6.426,
       "power_w": 72.9503,
-      "thrust_N": 6.1211,
-      "torque_Nm": 0.0054,
-      "efficiency_N_per_W": 0.08391
+      "thrust_N": 6.1903,
+      "torque_Nm": 0.0063,
+      "efficiency_N_per_W": 0.08486
     },
     {
       "phase": "A1400_B1600",
@@ -103,9 +106,9 @@
       "voltage_v": 11.3091,
       "current_a": 7.9216,
       "power_w": 89.5893,
-      "thrust_N": 7.0412,
-      "torque_Nm": 0.0207,
-      "efficiency_N_per_W": 0.07859
+      "thrust_N": 7.1104,
+      "torque_Nm": 0.0219,
+      "efficiency_N_per_W": 0.07937
     },
     {
       "phase": "A1400_B1700",
@@ -115,9 +118,9 @@
       "voltage_v": 11.2071,
       "current_a": 10.2199,
       "power_w": 114.5367,
-      "thrust_N": 8.2705,
-      "torque_Nm": 0.0407,
-      "efficiency_N_per_W": 0.07221
+      "thrust_N": 8.3567,
+      "torque_Nm": 0.0423,
+      "efficiency_N_per_W": 0.07296
     },
     {
       "phase": "A1400_B1800",
@@ -127,9 +130,9 @@
       "voltage_v": 11.1164,
       "current_a": 13.3327,
       "power_w": 148.2108,
-      "thrust_N": 9.6189,
-      "torque_Nm": 0.0672,
-      "efficiency_N_per_W": 0.0649
+      "thrust_N": 9.7406,
+      "torque_Nm": 0.0693,
+      "efficiency_N_per_W": 0.06572
     },
     {
       "phase": "A1400_B1900",
@@ -139,9 +142,9 @@
       "voltage_v": 10.9595,
       "current_a": 17.1197,
       "power_w": 187.62,
-      "thrust_N": 11.1764,
-      "torque_Nm": 0.096,
-      "efficiency_N_per_W": 0.05957
+      "thrust_N": 11.263,
+      "torque_Nm": 0.0983,
+      "efficiency_N_per_W": 0.06003
     },
     {
       "phase": "A1400_B2000",
@@ -151,9 +154,9 @@
       "voltage_v": 10.839,
       "current_a": 21.0956,
       "power_w": 228.6536,
-      "thrust_N": 12.5626,
-      "torque_Nm": 0.1199,
-      "efficiency_N_per_W": 0.05494
+      "thrust_N": 12.3738,
+      "torque_Nm": 0.1145,
+      "efficiency_N_per_W": 0.05412
     }
   ]
 }

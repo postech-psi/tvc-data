@@ -11,7 +11,7 @@ import os
 
 import numpy as np
 
-from .align import estimate_lag, thrust_signal, drive_signal
+from .align import estimate_lag, thrust_signal, drive_signal, edge_lag
 from .schema import PWM_MAP, LOADCELL, load_any, time_axis
 
 # The load cell samples at 50 Hz on every file recorded so far, and thrust is
@@ -30,6 +30,7 @@ MERGED_FIELDS = [
 ]
 
 PAD_S = 2.0  # keep a little idle either side of the commanded window
+EDGE_DISAGREE_S = 1.5  # xcorr vs single-edge estimates further apart than this are suspect
 
 
 def _interp(grid, t, v):
@@ -129,8 +130,18 @@ def merge_run(run, root, grid_hz=GRID_HZ, file_lags=None):
         else:
             drive, src = drive_signal(pm_cols)
             lag, corr, how = estimate_lag(lc_t, thrust_signal(lc_cols), pm_t, drive)
+        # Independent check from the single biggest transition. Cross-correlation
+        # fits the whole record and can, on a repetitive staircase, lock onto the
+        # wrong cycle; the largest edge cannot. Disagreement is the symptom.
+        e_lag, e_jump = edge_lag(lc_t, thrust_signal(lc_cols), pm_t,
+                                 pm_cols.get("b_cmd_us", []))
         lc_t = lc_t + lag
-        info.update(lag_s=lag, lag_corr=corr, lag_method=how, drive_signal=src)
+        info.update(lag_s=lag, lag_corr=corr, lag_method=how, drive_signal=src,
+                    edge_lag_s=e_lag, edge_jump_n=e_jump)
+        if e_lag is not None:
+            info["edge_vs_xcorr_s"] = round(e_lag - lag, 3)
+            if abs(e_lag - lag) > EDGE_DISAGREE_S:
+                info["flags"] = info.get("flags", []) + ["edge_disagrees"]
 
     lo, hi = run["window"]
     lo, hi = lo - PAD_S, hi + PAD_S
