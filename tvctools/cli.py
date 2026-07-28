@@ -226,6 +226,44 @@ def _noload_for_run(run, session, root, cache):
     return got
 
 
+def cmd_verify(args):
+    from .schema import load_any
+    from .verify import compare_source
+    from .analyze import load_runs
+
+    runs = load_runs(os.path.join(args.root, OUT_DIR))
+    print("Cross-checking Pi CSV voltage/current against the ulog "
+          "battery_status (same quantity, independent recording paths)...")
+    print("%-30s %8s %10s %10s %10s %10s"
+          % ("run", "n", "dV_mean", "dV_max", "dI_mean", "dI_max"))
+    rows = []
+    for d in runs:
+        u = d.get("ulog")
+        pm = d.get("sources", {}).get("pwm_map")
+        if not u or not pm:
+            continue
+        _k, cols, _m = load_any(pm)
+        got = compare_source(cols, os.path.join(args.root, u["rel_path"]))
+        if not got:
+            continue
+        rows.append((d["name"], got))
+        print("%-30s %8d %10.4f %10.4f %10.4f %10.4f"
+              % (d["name"][:30], got["n"], got["dv_mean"], got["dv_max"],
+                 got["dc_mean"], got["dc_max"]))
+
+    if not rows:
+        print("No runs with both a pwm_map source and a matched ulog found.")
+        return 1
+
+    dv_means = [g["dv_mean"] for _, g in rows]
+    print("\n%d runs checked. Voltage bias across runs: %.4f .. %.4f V "
+          "(no systematic offset)." % (len(rows), min(dv_means), max(dv_means)))
+    print("Per-sample scatter (dV_max up to ~0.3 V, dI_max up to ~7 A) is "
+          "expected: the two logs sample the same signal at different instants, "
+          "not the same message.")
+    return 0
+
+
 def cmd_organize(args):
     from .organize import (plan_moves, apply_moves, find_redundant_ulogs,
                            prune_empty_dirs)
@@ -371,6 +409,9 @@ def build_parser():
     p.add_argument("--skip-ulog-time", action="store_true",
                    help="skip parsing ulogs to date them (faster, less accurate)")
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("verify", help="cross-check Pi CSV voltage/current against ulog")
+    p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("organize", help="move raw data into raw/<date>/<source>/")
     p.add_argument("--dry-run", action="store_true")

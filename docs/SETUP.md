@@ -104,6 +104,32 @@ Verify visually with the per-run `steps.png`: raw trace in grey, command
 staircase in blue, step means with error bars in red. On `r04_005108_1300` the
 same step repeats to within ~1 % across four sweeps (2.85 / 2.84 / 2.83 / 2.98 N).
 
+## Do the Pi CSV and the ulog agree on voltage/current?
+
+Yes. Both come from the same `BATTERY_STATUS` field but via different paths --
+the Pi reads it live over the MAVLink telemetry link, PX4 logs its internal
+`battery_status` uORB topic to SD independently -- so they are never
+bit-identical, but they measure the same signal and track it closely.
+
+Verified with `python -m tvctools verify`, matching samples by `t_fc_us` (the
+shared flight-controller clock) within 30 ms, across all 14 runs with a ulog:
+
+- **Voltage: no systematic offset.** Per-run mean difference is -0.016 to
+  +0.010 V, straddling zero.
+- **Current: no systematic offset**, mean differences -0.08 to +0.15 A.
+- **Per-sample scatter is real but expected**: dV up to ~0.3 V, dI up to ~7 A.
+  This is not disagreement -- it is two independent samples of a signal that is
+  itself moving (during a throttle step, current swings several amps in
+  fractions of a second, so even a well-matched 10-30 ms offset lands on
+  different points of the transient).
+- **Per-phase (steady-state) means agree to ~0.02 V**, confirmed directly by
+  averaging both sources within each held command and comparing.
+
+Conclusion: use either source for voltage/current with confidence. The pipeline
+prefers the Pi CSV (`thrust_map_*.csv`) because it is higher rate (up to 50 Hz
+vs the ulog's 20 Hz battery_status) and it is what step segmentation is keyed
+to; the ulog is not a second, disagreeing measurement.
+
 ## Coaxial rig: both rotor commands matter
 
 This is a **coaxial counter-rotating** setup. `a_cmd_us` (rotor A) and
