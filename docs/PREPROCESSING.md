@@ -1,204 +1,198 @@
-# Preprocessing: every step from raw file to map point
+# 전처리: 원시 파일에서 맵 지점까지의 모든 단계
 
-What happens between a raw CSV and a row in `out/pwm_thrust_torque_map.csv`, and
-why each step exists.
+원시 CSV와 `out/pwm_thrust_torque_map.csv`의 한 행 사이에서 무슨 일이 일어나는지,
+그리고 각 단계가 왜 존재하는지.
 
 ```
-raw load-cell CSV ──┐
-                    ├─► 1 time base ─► 2 align ─► 3 resample ─► 4 segment
-raw thrust_map CSV ─┘                                               │
+원시 로드셀 CSV ────┐
+                    ├─► 1 시간 기준 ─► 2 정렬 ─► 3 리샘플 ─► 4 구간 분할
+원시 thrust_map CSV ─┘                                             │
                                                                     ▼
-                                        7 map point ◄─ 6 average ◄─ 5 trim
+                                        7 맵 지점 ◄─ 6 평균 ◄─ 5 양끝 잘라내기
 ```
 
 ---
 
-## 1. Put both files on a common time base
+## 1. 두 파일을 공통 시간 기준 위에 올린다
 
-The two systems share no clock.
+두 시스템은 어떤 클록도 공유하지 않는다.
 
-| File | Its clock | Fix |
+| 파일 | 그 클록 | 보정 |
 |---|---|---|
-| `pwm/thrust_map_*.csv` | `t_epoch` — Pi wall clock, UTC | already absolute; used as-is |
-| `loadcell/data_*.csv` | `t_ms` — free-running STM32 uptime | anchored on the filename |
+| `pwm/thrust_map_*.csv` | `t_epoch` — Pi 벽시계, UTC | 이미 절대 시간; 그대로 사용 |
+| `loadcell/data_*.csv` | `t_ms` — 자유 진행 STM32 가동 시간 | 파일명에 고정 |
 
-For the load cell:
+로드셀의 경우:
 
 ```
 epoch[i] = filename_epoch + (t_ms[i] − t_ms[0]) / 1000
 ```
 
-The filename is bench-local (KST, UTC+9), so a 9-hour shift is applied. This is
-good to roughly a second — the delay between the GUI opening the file and the
-first sample arriving.
+파일명은 벤치 로컬 시간(KST, UTC+9)이므로 9시간의 이동이 적용된다. 이는
+대략 1초 정밀도이다 — GUI가 파일을 여는 시점과 첫 샘플이 도착하는 시점 사이의 지연이다.
 
-## 2. Refine the anchor by cross-correlation
+## 2. 상호상관으로 앵커를 정밀화한다
 
-One second is too coarse when steps are 2.4 s, so the residual offset is fitted.
-Cross-correlation needs one signal from **each** system:
+계단이 2.4초일 때 1초는 너무 거칠므로, 잔여 오프셋을 피팅한다.
+상호상관은 **각** 시스템에서 하나씩의 신호가 필요하다:
 
-- **Load cell → thrust (`−Fz`).** The only usable signal there; `pwm`, `rpm` and
-  `Current_mA` are dead by design.
-- **Pixhawk → commanded PWM (`b_cmd_us`), or current when the command is
-  constant.** Selected in `align.drive_signal`.
+- **로드셀 → 추력 (`−Fz`).** 거기서 유일하게 쓸 수 있는 신호이다; `pwm`, `rpm`,
+  `Current_mA`는 설계상 죽어 있다.
+- **Pixhawk → 지령 PWM (`b_cmd_us`), 또는 지령이 일정할 때는 전류.**
+  `align.drive_signal`에서 선택된다.
 
-Why commanded PWM first: it is the same *shape* as the thrust response, and it
-correlates better (r = 0.62 vs 0.54 on the sweeps). Why current as fallback: a
-60 s constant hold has zero command variance, so there is nothing to correlate —
-current still fluctuates with the motor. Voltage is never used; it follows slow
-battery drift and its lag estimates run to the edge of the search window.
+지령 PWM을 먼저 쓰는 이유: 이것은 추력 응답과 같은 *형상*이며, 상관이 더 좋다
+(스윕에서 r = 0.62 vs 0.54). 전류를 대체 수단으로 쓰는 이유: 60초 정상 홀드는
+지령 분산이 0이므로 상관시킬 것이 없다 — 전류는 여전히 모터에 따라 변동한다.
+전압은 절대 쓰지 않는다; 느린 배터리 드리프트를 따르며 지연 추정치가 탐색 창의
+가장자리까지 치닫는다.
 
-The procedure (`align.estimate_lag`):
+절차 (`align.estimate_lag`):
 
-1. Resample both onto a common 20 Hz grid spanning their overlap ±20 s.
-2. Median-filter the thrust over 0.25 s. **This is the one place filtering is
-   used**, and only to sharpen the correlation peak — it never touches the values
-   that get averaged later.
-3. Z-score both signals, so the fit responds to shape rather than magnitude.
-4. Scan the lag from −20 s to +20 s and keep the highest Pearson correlation.
-5. If the best peak is below r = 0.25, return lag 0 and method `weak`: the coarse
-   filename anchor stands rather than a confident wrong number.
+1. 두 신호를 겹치는 구간 ±20초에 걸친 공통 20 Hz 격자에 리샘플한다.
+2. 추력을 0.25초에 걸쳐 중앙값 필터링한다. **이것이 필터링이 사용되는 유일한
+   곳**이며, 오직 상관 피크를 날카롭게 하기 위해서일 뿐 — 이후 평균되는 값에는
+   결코 손대지 않는다.
+3. 두 신호를 Z-점수화하여, 피팅이 크기가 아니라 형상에 반응하도록 한다.
+4. 지연을 −20초에서 +20초까지 스캔하여 가장 높은 피어슨 상관을 유지한다.
+5. 최고 피크가 r = 0.25 미만이면 지연 0과 방법 `weak`를 반환한다: 확신에 찬 틀린
+   숫자보다는 거친 파일명 앵커를 그대로 둔다.
 
-One lag is fitted **per load-cell file**, not per run — the offset is a property
-of the recording. It is taken from the longest overlapping sweep, because a short
-sweep cross-correlated against a long recording containing several similar
-staircases can lock onto the wrong one.
+지연 하나는 실행별이 아니라 **로드셀 파일별로** 피팅된다 — 오프셋은 녹음의
+속성이다. 이는 가장 긴 겹치는 스윕에서 취한다. 짧은 스윕을 여러 유사한 계단을
+포함한 긴 녹음과 상호상관시키면 엉뚱한 계단에 고정될 수 있기 때문이다.
 
-**Known systematic:** command-based and current-based lags disagree by ~0.3 s,
-which is the motor's mechanical response time. Correlating against the command
-absorbs that lag into the fit, so settled thrust lands in the correct step — good
-for the map. Correlating against current gives a truer *clock* offset. Neither is
-"wrong"; `run.json` records which was used in `drive_signal`.
+**알려진 계통 오차:** 지령 기반 지연과 전류 기반 지연은 ~0.3초 차이가 나는데,
+이는 모터의 기계적 응답 시간이다. 지령에 대해 상관시키면 그 지연이 피팅에
+흡수되므로 안정된 추력이 올바른 계단에 안착한다 — 맵에는 좋다. 전류에 대해
+상관시키면 더 참된 *클록* 오프셋을 얻는다. 어느 쪽도 "틀린" 것은 아니다;
+`run.json`은 `drive_signal`에 어느 쪽이 사용되었는지 기록한다.
 
-### Cross-check: the single largest edge
+### 교차 확인: 가장 큰 단일 에지
 
-Cross-correlation fits the whole record, which is what makes it robust to noise
-but also what lets it lock onto the wrong cycle of a repetitive staircase (a
-27.5 s sweep matched against a 160 s recording once produced a confident 19 s
-error). So a second, independent estimate is taken from the **single biggest
-command transition** and stored alongside.
+상호상관은 기록 전체를 피팅하는데, 이것이 잡음에 강건하게 만드는 요인이자
+반복적인 계단의 엉뚱한 주기에 고정되게 만드는 요인이기도 하다 (27.5초 스윕을
+160초 녹음에 대조하다가 한번은 확신에 찬 19초 오차를 낳았다). 그래서 두 번째
+독립 추정치를 **가장 큰 단일 지령 전이(transition)**에서 취해 함께 저장한다.
 
-Why one edge is worth anything: it is by far the highest-SNR feature in the
-record. The final ramp-down moves thrust ~9 N against 0.7 N of noise — a 13-sigma
-event — whereas an ordinary 100 us step moves it ~1 N and is only 1.6 sigma, not
-individually locatable. Edges smaller than 3 N are rejected.
+에지 하나가 가치가 있는 이유: 그것은 기록에서 단연 가장 높은 SNR 특징이다.
+최종 램프다운은 0.7 N 잡음에 대해 추력을 ~9 N 움직인다 — 13-시그마 사건이다 —
+반면 보통의 100 µs 계단은 ~1 N 움직여 1.6 시그마에 불과하고 개별적으로는
+위치를 찾을 수 없다. 3 N보다 작은 에지는 기각된다.
 
-Both estimates use the same sign convention (offset to ADD to the load-cell
-clock), verified against a synthetic record with a known injected shift: xcorr and
-edge agreed to 0.03 s at +0.7, -0.4 and +1.3 s.
+두 추정치 모두 같은 부호 규약(로드셀 클록에 더할 오프셋)을 사용하며, 알려진
+주입 이동이 있는 합성 기록에 대해 검증되었다: xcorr와 에지가 +0.7, −0.4, +1.3초에서
+0.03초까지 일치했다.
 
-`run.json` records `edge_lag_s`, `edge_jump_n` and `edge_vs_xcorr_s`. On real
-sweeps the difference is **+0.33 to +0.54 s**, which is the motor's mechanical
-response time -- thrust genuinely lags the command, and the edge measures
-command-to-thrust while the global fit averages over the whole staircase. A
-difference beyond 1.5 s raises `edge_disagrees`, and on the current data exactly
-one run trips it: the short sweep whose edge is also the weakest (3.3 N).
+`run.json`은 `edge_lag_s`, `edge_jump_n`, `edge_vs_xcorr_s`를 기록한다. 실제
+스윕에서 그 차이는 **+0.33 ~ +0.54초**인데, 이는 모터의 기계적 응답 시간이다 --
+추력은 실제로 지령에 뒤처지며, 에지는 지령-대-추력을 측정하는 반면 전역 피팅은
+계단 전체에 걸쳐 평균한다. 1.5초를 넘는 차이는 `edge_disagrees`를 발생시키며,
+현재 데이터에서는 정확히 한 실행이 이를 유발한다: 에지가 또한 가장 약한(3.3 N)
+짧은 스윕이다.
 
-### Why not align on the first step alone?
+### 왜 첫 계단만으로 정렬하지 않는가?
 
-Anchoring on one event and then walking forward by the known step durations is
-attractive, and clock drift is genuinely negligible at these run lengths
-(a 100 ppm crystal error is 0.02 s over 200 s), so one anchor is in principle
-enough. Two things stop it being sufficient here:
+하나의 사건에 앵커를 잡고 알려진 계단 지속 시간만큼 앞으로 걸어가는 방법은
+매력적이며, 이 정도 실행 길이에서 클록 드리프트는 진정 무시할 만하다
+(100 ppm 크리스털 오차는 200초에 걸쳐 0.02초). 그래서 원리적으로는 앵커 하나면
+충분하다. 하지만 여기서 그것으로 충분하지 못하게 만드는 두 가지가 있다:
 
-1. **There is no large edge at the start.** These sweeps begin at B = 1000 with A
-   already holding, so the first transition (1000 -> 1100) moves thrust 1.12 N --
-   1.6 sigma, indistinguishable from noise. The big edge is at the *end*.
-2. **Step durations must not be assumed.** The configured `dwell_s` is not what
-   happens: on one run the actual mean step was 4.03 s with 0.097 s of jitter, and
-   assuming the 2.0 s default would have accumulated 87 s of error over 43 steps.
-   The Pi timestamps every sample, so the boundaries are already known exactly --
-   they never need to be inferred from a duration.
+1. **시작 부분에 큰 에지가 없다.** 이 스윕들은 A가 이미 홀드 중인 상태에서
+   B = 1000에서 시작하므로, 첫 전이(1000 -> 1100)는 추력을 1.12 N 움직인다 --
+   1.6 시그마로, 잡음과 구별할 수 없다. 큰 에지는 *끝*에 있다.
+2. **계단 지속 시간을 가정해서는 안 된다.** 설정된 `dwell_s`는 실제 일어나는 것이
+   아니다: 어느 실행에서는 실제 평균 계단이 4.03초에 지터 0.097초였고, 기본값 2.0초를
+   가정했다면 43계단에 걸쳐 87초의 오차가 누적되었을 것이다. Pi가 모든 샘플에
+   타임스탬프를 찍으므로 경계는 이미 정확히 알려져 있다 -- 지속 시간으로부터
+   추론할 필요가 결코 없다.
 
-Hence: use the Pi's logged timestamps for segmentation (which is what step 4
-does), fit the offset globally, and keep the big end edge as the sanity check.
+따라서: 구간 분할에는 Pi가 기록한 타임스탬프를 쓰고(이것이 4단계가 하는 일),
+오프셋은 전역적으로 피팅하며, 큰 끝 에지는 온전성 확인으로 유지한다.
 
-## 3. Resample onto one grid
+## 3. 하나의 격자에 리샘플한다
 
-Everything is interpolated onto a **50 Hz** grid — the load cell's native rate,
-because thrust is the noisy channel and every sample counts. Downsampling to the
-Pixhawk's 20 Hz would discard 60 % of the force data.
+모든 것이 **50 Hz** 격자에 보간된다 — 로드셀의 고유 속도이다. 추력이 잡음이 많은
+채널이고 모든 샘플이 중요하기 때문이다. Pixhawk의 20 Hz로 다운샘플링하면
+힘 데이터의 60%를 버리게 된다.
 
-Two different rules, and the distinction matters:
+두 가지 다른 규칙이 있으며, 그 구분이 중요하다:
 
-| Columns | Rule | Why |
+| 열 | 규칙 | 이유 |
 |---|---|---|
-| `a_cmd_us`, `b_cmd_us`, `sweep_idx`, `phase` | **zero-order hold** | Commands are staircases. A commanded 1000 followed by a commanded 1100 was never 1043 in between; interpolating would invent values that were never sent. |
-| `voltage_v`, `current_a`, `Fx…Tz`, `servo*_raw` | **linear interpolation** | These are continuous physical quantities that really did pass through intermediate values. |
+| `a_cmd_us`, `b_cmd_us`, `sweep_idx`, `phase` | **0차 홀드(zero-order hold)** | 지령은 계단이다. 지령 1000 다음에 지령 1100이 오면 그 사이가 1043이었던 적은 결코 없다; 보간하면 결코 보내지지 않은 값을 지어내게 된다. |
+| `voltage_v`, `current_a`, `Fx…Tz`, `servo*_raw` | **선형 보간** | 이들은 실제로 중간값을 거쳐 간 연속적인 물리량이다. |
 
-Carrying the slower Pixhawk stream onto the faster grid adds no information, but
-it invents none either.
+느린 Pixhawk 스트림을 더 빠른 격자로 옮기는 것은 정보를 더하지 않지만, 없는
+정보를 지어내지도 않는다.
 
-Derived here: `thrust_N = −Fz` (the stand logs vertical load negative),
+여기서 파생되는 값: `thrust_N = −Fz` (스탠드는 수직 하중을 음수로 기록한다),
 `torque_Nm = Tz`, `power_w = voltage_v × current_a`.
 
-Output: `runs/<date>/<run>/merged.csv`.
+출력: `runs/<date>/<run>/merged.csv`.
 
-## 4. Segment into steps — by the command, never by the thrust
+## 4. 계단으로 구간 분할한다 — 추력이 아니라 지령으로, 항상
 
-Rows are grouped by the `phase` string (`A1400_B1700`); a new group starts
-whenever it changes.
+행은 `phase` 문자열(`A1400_B1700`)로 그룹화된다; 그것이 바뀔 때마다 새 그룹이
+시작된다.
 
-This is the central design decision. Within-step thrust noise is σ ≈ 0.7 N while
-a 100 µs step changes thrust by only 0.65–1.5 N, so adjacent steps overlap at
-1.1–2.1 σ and **step edges cannot be found in the thrust signal**. They do not
-need to be: the Pi commanded those steps and logged exactly when. The boundaries
-are known, not inferred.
+이것이 핵심 설계 결정이다. 계단 내 추력 잡음은 σ ≈ 0.7 N인데 100 µs 계단은 추력을
+겨우 0.65–1.5 N 변화시키므로, 인접 계단은 1.1–2.1 σ에서 겹치고 **계단 에지는 추력
+신호에서 찾을 수 없다**. 그럴 필요도 없다: Pi가 그 계단들을 지령했고 정확히 언제인지
+기록했다. 경계는 추론되는 것이 아니라 알려져 있다.
 
-## 5. Trim each step at both ends
+## 5. 각 계단의 양끝을 잘라낸다
 
-| Trim | Amount | Reason |
+| 잘라내기 | 양 | 이유 |
 |---|---|---|
-| Leading | 50 % (`SETTLE_FRAC`) | motor and prop spin-up; the stand also rings |
-| Trailing | 12 % (`TAIL_GUARD_FRAC`) | guards against alignment-lag error letting the *next* step bleed in |
+| 앞부분 | 50% (`SETTLE_FRAC`) | 모터와 프로펠러 스핀업; 스탠드도 울림(ring)이 있다 |
+| 뒷부분 | 12% (`TAIL_GUARD_FRAC`) | 정렬-지연 오차로 인해 *다음* 계단이 스며드는 것을 막는다 |
 
-The tail guard was added after measuring the effect: a ±0.3 s lag error biased
-step means by up to 0.144 N without it, and 0.058 N with it — now safely under
-the ~0.11 N standard error.
+꼬리 가드(tail guard)는 그 효과를 측정한 뒤 추가되었다: ±0.3초 지연 오차가 없으면
+계단 평균을 최대 0.144 N까지 편향시켰고, 있으면 0.058 N이었다 — 이제 ~0.11 N
+표준오차 아래로 안전히 들어온다.
 
-## 6. Average, robustly
+## 6. 강건하게 평균한다
 
-1. **MAD outlier rejection** (`plot.mad_mask`, k = 3.5) — drops sensor glitches
-   and dropouts, not vibration. Uses the median absolute deviation, so a few wild
-   samples cannot drag the threshold out with them.
-2. **Mean** of what survives.
-3. **Uncertainty**, corrected for autocorrelation:
+1. **MAD 이상치 제거** (`plot.mad_mask`, k = 3.5) — 진동이 아니라 센서 결함과
+   드롭아웃을 버린다. 중앙값 절대편차를 사용하므로, 몇몇 극단 샘플이 임계값을
+   함께 끌어당기지 못한다.
+2. 살아남은 것의 **평균**.
+3. 자기상관에 대해 보정한 **불확실성**:
 
 ```
-tau   = 1 + 2·Σ ρ(k)        integrated autocorrelation time
+tau   = 1 + 2·Σ ρ(k)        적분 자기상관 시간
 n_eff = n / tau
 SEM   = sd / sqrt(n_eff)
 ```
 
-The noise is propeller vibration, not white measurement error: lag-1
-autocorrelation is ≈ 0.5 and tau ≈ 3–4 samples. Naive `sd/√n` therefore
-understates the uncertainty by about 2×. Reporting `n_eff` keeps the error bar
-honest.
+잡음은 백색 측정 오차가 아니라 프로펠러 진동이다: 지연-1 자기상관은 ≈ 0.5이고
+tau ≈ 3–4 샘플이다. 따라서 순진한 `sd/√n`은 불확실성을 약 2배 과소평가한다.
+`n_eff`를 보고하면 오차 막대가 정직하게 유지된다.
 
-### Why the thrust is *not* low-pass filtered
+### 추력을 *왜* 저역 통과 필터링하지 않는가
 
-A moving average and a mean are both linear, so filtering before averaging is
-very nearly a no-op. Measured across a sweep, filtering changed the step mean by
-**0.0005–0.024 N** — against a 0.11 N standard error and 0.65–1.5 N step
-increments. It does not recover a truer value because there is no extra
-information to recover; the mean was already doing the smoothing.
+이동 평균과 평균은 둘 다 선형이므로, 평균 전에 필터링하는 것은 거의 무의미(no-op)에
+가깝다. 스윕 전반에 걸쳐 측정했을 때 필터링은 계단 평균을 **0.0005–0.024 N** 바꿨다
+— 0.11 N 표준오차와 0.65–1.5 N 계단 증분에 비하면 미미하다. 더 참된 값을 복원하지
+못한다. 복원할 여분의 정보가 없기 때문이다; 평균이 이미 평활화를 하고 있었다.
 
-What it *does* do is make the naive error bar look about 5× smaller, by inducing
-correlation between neighbouring samples. That is false confidence, and undoing
-it properly requires an autocorrelation window at least as long as the filter —
-delicate to get right, and pointless when the mean is unchanged.
+필터링이 *실제로* 하는 일은, 이웃 샘플 간에 상관을 유도함으로써 순진한 오차 막대를
+약 5배 작아 보이게 만드는 것이다. 그것은 거짓 신뢰이며, 이를 제대로 되돌리려면
+적어도 필터만큼 긴 자기상관 창이 필요하다 — 제대로 맞추기 까다롭고, 평균이 바뀌지
+않을 때는 무의미하다.
 
-Filtering is therefore used only for **alignment** (step 2) and **plotting**,
-never for the numbers.
+따라서 필터링은 오직 **정렬**(2단계)과 **플롯팅**에만 쓰이고, 숫자에는 결코
+쓰이지 않는다.
 
-The distribution is also close to symmetric (skew −0.6 … +0.4), so the mean is
-sound and the median would only add noise.
+분포 또한 거의 대칭에 가까우므로(왜도 −0.6 … +0.4), 평균이 건전하고 중앙값은
+잡음만 더할 것이다.
 
-## 7. Emit the map point
+## 7. 맵 지점을 내보낸다
 
-One row per step in `out/pwm_thrust_torque_map.csv`, carrying **both** rotor
-commands — thrust and especially reaction torque depend on the coaxial pair, so a
-single-PWM row would not identify the test point:
+`out/pwm_thrust_torque_map.csv`에 계단당 한 행씩, **두** 로터 지령을 모두 담는다 —
+추력, 특히 반작용 토크는 동축 쌍에 의존하므로, 단일 PWM 행으로는 테스트 지점을
+식별할 수 없다:
 
 ```
 run, session, phase, a_cmd_us, b_cmd_us, n, n_eff,
@@ -206,23 +200,22 @@ thrust_N, thrust_sd, thrust_sem, torque_Nm, torque_sem,
 voltage_v, voltage_noload_v, current_a, power_w, efficiency_N_per_W
 ```
 
-Points are **not** averaged across runs: the same command at a different battery
-state gives a different thrust, and collapsing runs would hide exactly the effect
-`voltage_sag` measures.
+지점들은 실행 간에 평균되지 **않는다**: 같은 지령이라도 배터리 상태가 다르면
+다른 추력을 주며, 실행을 뭉개면 정확히 `voltage_sag`가 측정하는 효과를 숨기게 된다.
 
-## Tuning
+## 튜닝
 
-All in `tvctools/analyze.py` and `tvctools/align.py`:
+모두 `tvctools/analyze.py`와 `tvctools/align.py`에 있다:
 
-| Constant | Default | Effect |
+| 상수 | 기본값 | 효과 |
 |---|---|---|
-| `SETTLE_FRAC` | 0.50 | more → cleaner steady state, fewer samples |
-| `TAIL_GUARD_FRAC` | 0.12 | more → safer against lag error, fewer samples |
-| `MIN_SAMPLES` | 8 | a step below this is dropped |
-| `MAX_AC_LAG` | 8 | lags summed for tau |
-| `GRID_HZ` (merge) | 50 | match the load cell |
-| `MIN_CORR` | 0.25 | below this the lag fit is rejected |
-| `MIN_CMD_SPAN_US` | 150 | command must move this much to be the reference |
+| `SETTLE_FRAC` | 0.50 | 클수록 → 더 깨끗한 정상상태, 샘플 수 적어짐 |
+| `TAIL_GUARD_FRAC` | 0.12 | 클수록 → 지연 오차에 더 안전, 샘플 수 적어짐 |
+| `MIN_SAMPLES` | 8 | 이보다 적은 계단은 버려짐 |
+| `MAX_AC_LAG` | 8 | tau를 구할 때 합산되는 지연 수 |
+| `GRID_HZ` (병합) | 50 | 로드셀에 맞춤 |
+| `MIN_CORR` | 0.25 | 이보다 낮으면 지연 피팅이 기각됨 |
+| `MIN_CMD_SPAN_US` | 150 | 지령이 기준이 되려면 이만큼 움직여야 함 |
 
-With 4 s steps the trims leave ~1.5 s of settled data per step (≈ 75 samples at
-50 Hz), which is comfortable.
+4초 계단에서는 잘라내기 후 계단당 ~1.5초의 안정된 데이터가 남으며(50 Hz에서
+≈ 75 샘플), 이는 여유롭다.

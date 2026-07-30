@@ -32,13 +32,14 @@ REFERENCE = "reference"
 RAMP_DOWN = "ramp_down"
 RAMP_BETWEEN = "ramp_between"
 CHIRP = "chirp"
+POST_STOP = "post_stop"
 
 PWM_MIN_US = 1000
 
 #: Kinds whose samples are written to disk. Warmup is the only one skipped: the
 #: ESCs are arming and the numbers mean nothing.
 RECORDED_KINDS = (TARE, IDLE_PRE, IDLE_POST, STEP, REFERENCE,
-                  RAMP_DOWN, RAMP_BETWEEN, CHIRP)
+                  RAMP_DOWN, RAMP_BETWEEN, CHIRP, POST_STOP)
 
 #: Kinds a fixed dwell applies to. Everything else has a duration set by the plan.
 ADAPTIVE_KINDS = (STEP, REFERENCE)
@@ -225,6 +226,15 @@ def expand(plan, seed=None):
 
     if plan["idle"]["post_s"] > 0:
         b.add(IDLE_POST, PWM_MIN_US, PWM_MIN_US, plan["idle"]["post_s"])
+
+    # The last segment is the one the run loop does *not* execute: it runs in the
+    # shutdown path, after the motors have been stopped and with nothing
+    # commanding the outputs. It is generated here anyway so that `plan show`
+    # accounts for its duration and its seg_id follows on from the rest --
+    # `runner` splits it back out. Its command is minimum because that is where a
+    # lapsed actuator-test command leaves the outputs, not because it is sent.
+    if plan["post_stop"]["seconds"] > 0:
+        b.add(POST_STOP, PWM_MIN_US, PWM_MIN_US, plan["post_stop"]["seconds"])
 
     return b.segments, seed
 

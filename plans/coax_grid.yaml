@@ -49,6 +49,12 @@ idle:
 tare:
   seconds: 10             # recorded raw; offsets go in the manifest, not the data
 
+# After the motors are stopped, with nothing commanding the outputs at all.
+# Measures the zero again at the end of the run -- the drift against the opening
+# tare, which biases every step -- and the pack's recovered open-circuit voltage.
+post_stop:
+  seconds: 10
+
 limits:
   min_voltage_v: 9.9      # 3S: 3.3 V/cell
   max_current_a: 60

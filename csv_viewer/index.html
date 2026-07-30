@@ -1,0 +1,310 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSV Viewer</title>
+<script src="plotly.min.js"></script>
+<style>
+  body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+         margin: 0; padding: 10px; background: #fcfcfb; color: #222; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  #paths { width: 100%; height: 54px; font: 12px/1.4 ui-monospace, Menlo, monospace;
+           padding: 6px; box-sizing: border-box; }
+  .bar { display: flex; gap: 12px; align-items: center; margin: 6px 0 10px; flex-wrap: wrap; }
+  button { font-size: 12px; padding: 3px 8px; cursor: pointer; }
+  select, input[type=number] { font-size: 12px; }
+  input[type=number] { width: 78px; }
+  #msg { color: #777; font-size: 12px; }
+  #traces { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .card { border: 1px solid #ddd; background: #fff; padding: 6px 8px; border-radius: 3px; }
+  .hd { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+  .hd select { max-width: 300px; }
+  .ax { display: flex; gap: 5px; align-items: center; margin: 2px 0; }
+  .ax b { width: 12px; color: #666; }
+  .ax select { min-width: 120px; }
+  .ax .u { color: #999; }
+  #plot { width: 100%; height: 560px; }
+  #rowinfo { margin-top: 8px; }
+  .row { border-top: 1px solid #eee; padding: 5px 0; }
+  .cells { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px;
+           font: 12px ui-monospace, Menlo, monospace; }
+  .cells i { color: #999; font-style: normal; }
+  .hint { color: #999; font-size: 12px; }
+</style>
+
+<h1>CSV Viewer</h1>
+<textarea id="paths" spellcheck="false"
+  placeholder="한 줄에 경로 하나. 상대경로 · 절대경로 · 별표(glob) 모두 가능&#10;runs/2026-07-24_s2/A1850_B1850_1638/merged.csv&#10;runs/2026-07-24_s2/*/thrust.csv"></textarea>
+<div class="bar">
+  <button onclick="openPaths()">열기 / 새로고침</button>
+  <span>차원:</span>
+  <label><input type="radio" name="dim" value="2d" checked onchange="setMode(this.value)"> 2D</label>
+  <label><input type="radio" name="dim" value="3d" onchange="setMode(this.value)"> 3D</label>
+  <button onclick="addTrace(Object.keys(files)[0])">줄 추가</button>
+  <span id="msg"></span>
+</div>
+
+<div id="traces"></div>
+<div id="plot"></div>
+<div id="rowinfo"><span class="hint">점을 클릭하면 그 행과, 다른 파일들의 X 최근접 행을 여기에 보여줍니다.</span></div>
+
+<script>
+// Palette lifted from plot.py so figures from this viewer sit next to the
+// project's other plots without a colour clash. Assigned by row order.
+const PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300",
+                "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
+const AXES = ["x", "y", "z"];
+
+let files = {};    // path -> {cols, rows, numeric}
+let traces = [];   // {file, x:{col,off,scale}, y:{...}, z:{...}, right}
+let mode = "2d";
+let curveMap = []; // plotly curve number -> index into traces
+
+const $ = id => document.getElementById(id);
+const color = i => PALETTE[i % PALETTE.length];
+const msg = s => $("msg").textContent = s;
+
+// ---------------------------------------------------------------- data ----
+
+function parseCSV(text) {
+  // ponytail: plain comma split -- none of these logs quote their fields.
+  // Swap in a real parser only if a source starts emitting quoted commas.
+  const lines = text.trim().split(/\r?\n/);
+  const cols = lines[0].split(",").map(s => s.trim());
+  const rows = lines.slice(1).map(l => l.split(","));
+  const numeric = cols.map((_, i) =>
+    rows.some(r => r[i] !== undefined && r[i] !== "" && isFinite(+r[i])));
+  return { cols, rows, numeric };
+}
+
+const numCols = f => f.cols.filter((_, i) => f.numeric[i]);
+
+/**
+ * Columns a fresh row starts on: [x, y, z]. Epoch stamps are skipped for y/z --
+ * t_epoch is ~1.78e9, so landing on it by default paints a flat line and an
+ * axis labelled 1.7848B. Still selectable from the dropdown.
+ */
+function defaults(f) {
+  const n = numCols(f);
+  const epochish = c => /epoch/i.test(c)
+    || rawCol(f, c).every(v => !isFinite(v) || Math.abs(v) > 1e8);
+  const rest = n.slice(1).filter(c => !epochish(c));
+  return [n[0] || "", rest[0] || n[1] || n[0] || "", rest[1] || ""];
+}
+
+/** Column as raw numbers, blanks as NaN. null when the column is absent. */
+function rawCol(f, col) {
+  const i = f.cols.indexOf(col);
+  if (i < 0) return null;
+  return f.rows.map(r => (r[i] === undefined || r[i] === "") ? NaN : +r[i]);
+}
+
+/** value * scale + offset -- scale first, so t_ms x0.001 then shift in seconds. */
+function axisData(f, ax) {
+  const d = rawCol(f, ax.col);
+  return d && d.map(v => v * ax.scale + ax.off);
+}
+
+// --------------------------------------------------------------- traces ----
+
+function openPaths() {
+  fetch("/open?paths=" + encodeURIComponent($("paths").value))
+    .then(r => r.json())
+    .then(j => {
+      let added = 0;
+      for (const f of j.files) {
+        const fresh = !(f.path in files);
+        files[f.path] = parseCSV(f.text);
+        if (fresh) { addTrace(f.path, true); added++; }
+      }
+      msg(`${j.files.length}개 로드 (새 파일 ${added})`
+          + (j.missing.length ? ` · 못 찾음: ${j.missing.join(", ")}` : ""));
+      renderTable(); draw();
+    })
+    .catch(e => msg("실패: " + e));
+}
+
+function addTrace(path, quiet) {
+  if (!path) return;
+  const [x, y, z] = defaults(files[path]);
+  traces.push({
+    file: path,
+    x: { col: x, off: 0, scale: 1 },
+    y: { col: y, off: 0, scale: 1 },
+    z: { col: z, off: 0, scale: 1 },
+    right: false,
+  });
+  if (!quiet) { renderTable(); draw(); }
+}
+
+function setAx(i, a, k, v) { traces[i][a][k] = v; draw(); }
+function setRight(i, v) { traces[i].right = v; draw(); }
+function setFile(i, p) {
+  const t = traces[i], n = numCols(files[p]), d = defaults(files[p]);
+  t.file = p;
+  // keep a column name the new file also has, else fall back to its defaults
+  AXES.forEach((a, k) => { if (!n.includes(t[a].col)) t[a].col = d[k]; });
+  renderTable(); draw();
+}
+function dup(i) { traces.splice(i + 1, 0, JSON.parse(JSON.stringify(traces[i]))); renderTable(); draw(); }
+function del(i) { traces.splice(i, 1); renderTable(); draw(); }
+
+/** Shift this axis so its first finite sample lands on 0. */
+function zero(i, a) {
+  const t = traces[i], d = rawCol(files[t.file], t[a].col);
+  const first = d && d.find(v => isFinite(v));
+  if (first === undefined) return;
+  t[a].off = -first * t[a].scale;
+  renderTable(); draw();
+}
+
+function setMode(m) {
+  mode = m;
+  Plotly.purge("plot");        // cartesian <-> scene cannot be morphed in place
+  $("plot")._clickBound = false;  // purge drops the listeners too
+  renderTable(); draw();
+}
+
+// ----------------------------------------------------------------- view ----
+
+function renderTable() {
+  $("traces").innerHTML = traces.map((t, i) => {
+    const f = files[t.file];
+    if (!f) return "";
+    const opt = (sel, none) => (none ? `<option value="">--</option>` : "")
+      + numCols(f).map(c => `<option${c === sel ? " selected" : ""}>${c}</option>`).join("");
+    const ax = a => `<div class="ax"><b>${a.toUpperCase()}</b>
+      <select ${a === "z" && mode !== "3d" ? "disabled" : ""}
+              onchange="setAx(${i},'${a}','col',this.value)">${opt(t[a].col, a === "z")}</select>
+      <span class="u">이동 +</span><input type="number" step="any" value="${t[a].off}"
+        title="이 축을 이만큼 평행이동" onchange="setAx(${i},'${a}','off',+this.value)">
+      <span class="u">배율 ×</span><input type="number" step="any" value="${t[a].scale}"
+        title="배율. t_ms를 초로 바꾸려면 0.001" onchange="setAx(${i},'${a}','scale',+this.value)">
+      <button onclick="zero(${i},'${a}')" title="첫 값이 0이 되도록 이동값을 계산">0으로</button></div>`;
+    return `<div class="card" style="border-left:4px solid ${color(i)}">
+      <div class="hd">
+        <select onchange="setFile(${i},this.value)">${Object.keys(files)
+          .map(p => `<option${p === t.file ? " selected" : ""}>${p}</option>`).join("")}</select>
+        <label title="Y를 오른쪽 축에 그림"><input type="checkbox" ${t.right ? "checked" : ""}
+          ${mode === "3d" ? "disabled" : ""} onchange="setRight(${i},this.checked)"> 우측축</label>
+        <button onclick="dup(${i})">복제</button>
+        <button onclick="del(${i})">삭제</button>
+      </div>${AXES.map(ax).join("")}</div>`;
+  }).join("");
+}
+
+const axTitle = a => [...new Set(traces.map(t => t[a].col).filter(Boolean))].join(" / ");
+const shortName = t => t.file.split("/").slice(-2).join("/") + " : " + t.y.col;
+
+function draw() {
+  const data = [];
+  curveMap = [];
+  traces.forEach((t, i) => {
+    const f = files[t.file];
+    if (!f) return;
+    const x = axisData(f, t.x), y = axisData(f, t.y);
+    if (!x || !y) return;
+    if (mode === "3d") {
+      const z = axisData(f, t.z);
+      if (!z) return;
+      data.push({ type: "scatter3d", mode: "markers", x, y, z, name: shortName(t),
+                  marker: { size: 2, color: color(i) } });
+    } else {
+      data.push({ type: "scattergl", mode: "lines+markers", x, y, name: shortName(t),
+                  line: { width: 1.2, color: color(i) },
+                  marker: { size: 3, color: color(i) },
+                  yaxis: t.right ? "y2" : "y" });
+    }
+    curveMap.push(i);
+  });
+
+  const drawn = curveMap.map(i => traces[i]);
+  const right = drawn.filter(t => t.right), left = drawn.filter(t => !t.right);
+
+  const layout = mode === "3d"
+    ? { margin: { l: 0, r: 0, t: 10, b: 0 },
+        scene: { xaxis: { title: axTitle("x") }, yaxis: { title: axTitle("y") },
+                 zaxis: { title: axTitle("z") } } }
+    : { margin: { l: 62, r: right.length ? 62 : 20, t: 10, b: 44 }, hovermode: "closest",
+        xaxis: { title: axTitle("x"), gridcolor: "#eee" },
+        yaxis: { title: left.map(t => t.y.col).join(" / "), gridcolor: "#eee" } };
+  // an unused overlay axis still paints its own 0..1 ticks -- only add it when asked
+  if (mode !== "3d" && right.length)
+    layout.yaxis2 = { overlaying: "y", side: "right",
+                      title: right.map(t => t.y.col).join(" / ") };
+  layout.showlegend = true;
+  layout.legend = { orientation: "h", y: 1.06 };
+  layout.paper_bgcolor = "#fcfcfb";
+  layout.plot_bgcolor = "#fff";
+
+  if (traces.length && !data.length)
+    msg(mode === "3d" ? "3D는 Z 컬럼도 골라야 그려집니다" : "그릴 컬럼이 없습니다");
+
+  Plotly.react("plot", data, layout, { responsive: true }).then(gd => {
+    if (gd._clickBound) return;
+    gd._clickBound = true;
+    gd.on("plotly_click", ev => showRow(ev.points[0]));
+  });
+}
+
+// -------------------------------------------------------------- row info ---
+
+/** Index of the sample whose shifted X sits closest to xv. */
+function nearestX(ti, xv) {
+  const t = traces[ti], d = axisData(files[t.file], t.x);
+  if (!d) return -1;
+  // ponytail: linear scan -- a few thousand rows per file. Binary search if it drags.
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < d.length; i++) {
+    const e = Math.abs(d[i] - xv);
+    if (e < bd) { bd = e; best = i; }
+  }
+  return best;
+}
+
+function rowHTML(ti, ri, exact) {
+  const t = traces[ti], f = files[t.file];
+  const cells = f.cols
+    .map((c, k) => `<span><i>${c}</i> ${f.rows[ri][k] ?? ""}</span>`).join("");
+  return `<div class="row"><b style="color:${color(ti)}">${t.file}</b>
+    &nbsp;CSV ${ri + 2}번째 줄 (데이터 ${ri}행)
+    <span class="hint">${exact ? "← 클릭한 점" : "· X 최근접"}</span>
+    <div class="cells">${cells}</div></div>`;
+}
+
+function showRow(pt) {
+  const ti = curveMap[pt.curveNumber];
+  const ri = pt.pointIndex ?? pt.pointNumber;
+  if (ti === undefined || ri === undefined) return;
+  const t = traces[ti];
+  const xv = axisData(files[t.file], t.x)[ri];
+  const out = [rowHTML(ti, ri, true)];
+  traces.forEach((_, j) => {
+    if (j === ti || !files[traces[j].file]) return;
+    const k = nearestX(j, xv);
+    if (k >= 0) out.push(rowHTML(j, k, false));
+  });
+  $("rowinfo").innerHTML = out.join("");
+}
+
+// -------------------------------------------------------------- selftest ---
+
+function selftest() {
+  const f = parseCSV("t_ms,pwm,phase\n0,1000,A\n20,,B\n");
+  const eq = (a, b, m) => { if (String(a) !== String(b)) throw m + ": " + a + " != " + b; };
+  eq(f.cols.join(), "t_ms,pwm,phase", "cols");
+  eq(f.numeric.join(), "true,true,false", "numeric");        // blanks & text
+  eq(numCols(f).join(), "t_ms,pwm", "numCols");
+  const p = rawCol(f, "pwm");
+  eq(p[0], 1000, "raw"); if (!isNaN(p[1])) throw "blank must be NaN";
+  eq(rawCol(f, "nope"), null, "missing column");
+  const d = axisData(f, { col: "t_ms", off: -1, scale: 0.001 });  // scale, then shift
+  eq(d[0], -1, "axis[0]"); if (Math.abs(d[1] + 0.98) > 1e-9) throw "axis[1]: " + d[1];
+  eq(defaults(f).join(), "t_ms,pwm,", "defaults");
+  // epoch columns must not become the default y, by name or by magnitude
+  eq(defaults(parseCSV("t_rel_s,t_epoch,thrust_N\n0,1784878686,1.1\n")).join(),
+     "t_rel_s,thrust_N,", "defaults skips epoch by name");
+  eq(defaults(parseCSV("t,stamp,v\n0,2000000000,5\n")).join(),
+     "t,v,", "defaults skips epoch by magnitude");
+  document.body.innerHTML = "<pre>index.html selftest ok</pre>";
+}
+if (location.search.includes("selftest")) addEventListener("load", selftest);
+</script>

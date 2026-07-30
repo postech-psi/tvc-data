@@ -271,9 +271,13 @@ def cmd_run(args):
     supervisor = Supervisor(plan["limits"], stop_file=args.stop_file,
                             on_event=lambda kind, **f: recorder.event(kind, **f))
 
-    printer = _StatusPrinter(len(segments)) if not args.quiet else None
     runner = Runner(plan, link, actuator, loadcell, mavlink, recorder, supervisor,
-                    seed=seed, on_status=printer.update if printer else None)
+                    seed=seed)
+    # Counted from the segments the loop executes: the post-stop window is not
+    # one of them, and a progress line that never reaches its own total reads
+    # like a run that stopped short.
+    printer = _StatusPrinter(len(runner.live_segments)) if not args.quiet else None
+    runner.on_status = printer.update if printer else None
 
     loadcell.start()
     mavlink.start()
@@ -351,6 +355,15 @@ def _print_outcome(manifest, recorder, plan):
     if tare.get("offsets"):
         print(f"  {'tare':<18}Fz {tare['offsets']['Fz']:+.4f} N "
               f"from {tare['n_samples']} samples")
+
+    post = manifest.get("post_stop") or {}
+    if post.get("zero_thrust_n") is not None:
+        # The zero measured again with the motors stopped: how far the tare moved
+        # over the run, and therefore how far every step in it is out.
+        volts = (f", pack recovered to {post['voltage_v']:.2f} V"
+                 if post.get("voltage_v") is not None else "")
+        print(f"  {'zero after run':<18}{post['zero_thrust_n']:+.3f} N "
+              f"over {post['seconds']:.1f}s at rest{volts}")
 
     for warning in manifest.get("warnings", [])[:8]:
         print(f"  !                 {warning}")

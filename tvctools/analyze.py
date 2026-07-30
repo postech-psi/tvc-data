@@ -331,6 +331,10 @@ def build_sag(runs_root, min_runs=MIN_SAG_RUNS, min_span=MIN_SAG_VOLT_SPAN,
                     "r": round(r, 4),
                     "exponent_k": round(k, 3),
                     "pct_thrust_loss": round(100.0 * (t.max() - t.min()) / t.max(), 2),
+                    # The exact per-run means the fit was computed on, so the plot
+                    # draws scatter and line on the same voltage basis. write_rows
+                    # drops list fields, so this stays out of the CSV.
+                    "points": pts,
                 })
                 out.append(entry)
 

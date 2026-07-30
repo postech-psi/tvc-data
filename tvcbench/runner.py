@@ -9,7 +9,8 @@ Invariants the rest of the design depends on:
 
 * **The actuator is ticked from this loop and nowhere else.** Commands expire, so
   a loop that stops running stops the motors. Every path out of `run()` --
-  completion, abort, exception -- goes through the same stop.
+  completion, abort, exception -- goes through the same stop, and then through
+  the same post-stop recording window, which ticks nothing at all.
 * **Samples carry the `seg_id` that was executing when they were drained.** The
   loop drains every few milliseconds, so at most about one sample near a
   boundary can be attributed to the following segment. `seg_id` is therefore a
@@ -20,8 +21,8 @@ Invariants the rest of the design depends on:
 """
 
 from tvcbench.clock import ClockTracker, EpochAnchors, now
-from tvcbench.dwell import DwellController
-from tvcbench.sequence import STEP, TARE, WARMUP, expand
+from tvcbench.dwell import DwellController, mean_sem
+from tvcbench.sequence import POST_STOP, STEP, TARE, WARMUP, expand
 from tvcbench.sources.loadcell import thrust_n, torque_nm
 from tvcbench.supervisor import Abort
 
@@ -33,6 +34,12 @@ LOOP_SLEEP_S = 0.002
 # Wait for the first force sample before commanding anything. Without it the
 # dropout check has nothing to compare against and a dead sensor looks healthy.
 FIRST_SAMPLE_TIMEOUT_S = 5.0
+
+# Zero drift the post-stop window complains about. The tare is measured once at
+# rest and every step in the run is reported against it, so a zero that has moved
+# by this much has biased the entire map by the same amount -- against a 12 N
+# working thrust that is 2 %, which is well above anything else in the budget.
+POST_STOP_ZERO_WARN_N = 0.25
 
 # Device counter scale factors, counter units -> seconds.
 DEV_SCALE = {"loadcell": 1e-3, "fc_servo": 1e-6, "fc_esc": 1e-6}
@@ -61,6 +68,15 @@ class Runner:
         self._sleep = time.sleep if sleep is None else sleep
 
         self.segments, self.seed = expand(plan, seed=seed)
+        # The post-stop window is held apart from the segments the loop executes:
+        # it belongs to the shutdown path, after the motors are stopped, and the
+        # loop's invariant is that every segment it touches is a commanded one.
+        # It stays in `self.segments` so `plan show` and `sequence.csv` account
+        # for it.
+        self.post_stop = next((s for s in self.segments if s.kind == POST_STOP),
+                              None)
+        self.live_segments = [s for s in self.segments if s.kind != POST_STOP]
+
         self.anchors = EpochAnchors()
         self.clocks = {name: ClockTracker(name, scale, CLOCK_DECIMATE.get(name, 1))
                        for name, scale in DEV_SCALE.items()}
@@ -70,6 +86,7 @@ class Runner:
         self.abort_detail = None
         self.tare_offsets = None
         self.tare_n = 0
+        self.post_stop_result = None
         self._seg_index = 0
 
     # --- lifecycle ----------------------------------------------------------
@@ -83,7 +100,7 @@ class Runner:
         try:
             self._preflight()
             self._await_first_force_sample()
-            for index, segment in enumerate(self.segments):
+            for index, segment in enumerate(self.live_segments):
                 self._seg_index = index
                 self._execute(segment)
             self.outcome = "completed"
@@ -117,6 +134,12 @@ class Runner:
         except Exception as exc:                       # noqa: BLE001
             self.recorder.warn(f"stop command failed: {exc}")
 
+        try:
+            self._record_post_stop()
+        except Exception as exc:                       # noqa: BLE001
+            # Nothing in the tail is worth losing the manifest for.
+            self.recorder.warn(f"post-stop window failed: {exc}")
+
         for source in (self.loadcell, self.mavlink):
             try:
                 source.stop()
@@ -144,6 +167,7 @@ class Runner:
             seed=self.seed,
             clock={"anchors": self.anchors.as_dict(), "device_fits": fits},
             tare={"offsets": self.tare_offsets, "n_samples": self.tare_n},
+            post_stop=self.post_stop_result,
             achieved_rates=self._achieved_rates(),
             requested_rates={
                 "fc_servo": self.plan["hardware"]["fc"]["servo_hz"],
@@ -268,6 +292,102 @@ class Runner:
                 self.supervisor.note_battery(sample.fields.get("voltage_v"),
                                              sample.fields.get("current_a"))
 
+    # --- the post-stop window -----------------------------------------------
+    def _record_post_stop(self):
+        """
+        Keep recording for a while after the motors have been stopped.
+
+        Nothing commands the outputs here. `actuator.stop()` has been sent and
+        the last command expires a second later, so this is the bench at rest
+        with the whole run's thermal and electrical history behind it. Two things
+        are worth the battery-free seconds.
+
+        **The load cell's zero at the end of the run.** The tare is taken once,
+        at the start, and every step is reported against it; a zero that has since
+        moved biases the entire map by that amount, and there was previously no
+        way to know it had. Measuring the same quantity again at the end turns
+        that unknown into a number in the manifest -- and a warning when it is
+        large enough to matter.
+
+        **The pack's recovered voltage.** Under load the terminal voltage carries
+        the IR drop; off load it relaxes towards open circuit, which is the state
+        of charge the next run's budget should be planned against.
+
+        It runs on every exit path, aborts included -- an abort is exactly when
+        the state of the bench afterwards is most worth having, and the coast-down
+        it captures is the record of what the rotors actually did.
+        """
+        segment = self.post_stop
+        if segment is None:
+            return
+
+        t_start = now()
+        self.recorder.event("post_stop_start", t_mono=t_start,
+                            seg_id=segment.seg_id, planned_s=segment.dwell_s)
+
+        # A stop arriving *now* is the operator declining to wait out the tail.
+        # A stop that ended the run is already latched and must not skip it.
+        already_stopping = self.supervisor.stop_requested
+        deadline = t_start + segment.dwell_s
+        force = []
+        reason = "planned"
+        try:
+            while now() < deadline:
+                batch = self.loadcell.drain()
+                force.extend(batch)
+                # No `actuator.tick`: the commands lapsing is the point.
+                self._ingest(batch, segment.seg_id)
+                self._ingest(self.mavlink.drain(), segment.seg_id)
+                if self.supervisor.stop_requested and not already_stopping:
+                    reason = "stopped"
+                    break
+                self._sleep(LOOP_SLEEP_S)
+        except (Exception, KeyboardInterrupt) as exc:    # noqa: BLE001
+            # Whatever was collected before this is still a valid measurement.
+            reason = "error"
+            self.recorder.warn(f"post-stop window cut short: "
+                               f"{type(exc).__name__}: {exc}")
+
+        t_end = now()
+        zero, sem = self._zero_check(force, t_start, t_end)
+        self.post_stop_result = {
+            "seconds": round(t_end - t_start, 4),
+            "reason": reason,
+            "n_loadcell": len(force),
+            "zero_thrust_n": zero,
+            "zero_thrust_sem_n": sem,
+            "voltage_v": self.supervisor.last_voltage_v,
+        }
+        if zero is not None and abs(zero) > POST_STOP_ZERO_WARN_N:
+            self.recorder.warn(
+                f"load cell zero is {zero:+.3f} N at rest after the run "
+                f"(> {POST_STOP_ZERO_WARN_N:.2f} N): the tare drifted and every "
+                f"step is biased by about that much")
+
+        self.recorder.segment_record(segment, t_start, t_end,
+                                     n_loadcell=len(force), dwell_reason=reason,
+                                     thrust_mean_n=zero, thrust_sem_n=sem)
+        self.recorder.event("post_stop_end", t_mono=t_end, seg_id=segment.seg_id,
+                            **self.post_stop_result)
+        self.recorder.flush(sync=True)
+
+    @staticmethod
+    def _zero_check(samples, t_start, t_end):
+        """
+        Mean tared thrust over the settled half of the window: the zero drift.
+
+        The first half is discarded. After a completed run the rotors have been
+        at minimum through `idle_post` already and there is nothing left to
+        settle, but this window also opens straight after an abort -- and a
+        coast-down averaged into a zero is not a zero.
+        """
+        midpoint = t_start + 0.5 * (t_end - t_start)
+        values = [thrust for thrust in
+                  (thrust_n(s.fields) for s in samples if s.t_mono >= midpoint)
+                  if thrust is not None]
+        mean, sem, _ = mean_sem(values)
+        return mean, sem
+
     def _apply_tare(self, samples):
         """
         Install the zero measured at rest -- without destroying the raw signal.
@@ -291,7 +411,7 @@ class Runner:
             return
         self.on_status({
             "seg_index": self._seg_index,
-            "n_segments": len(self.segments),
+            "n_segments": len(self.live_segments),
             "seg_id": segment.seg_id,
             "kind": segment.kind,
             "a_us": segment.a_us,

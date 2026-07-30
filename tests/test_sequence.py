@@ -15,6 +15,7 @@ from tvcbench.sequence import (
     CHIRP,
     IDLE_POST,
     IDLE_PRE,
+    POST_STOP,
     RAMP_BETWEEN,
     RAMP_DOWN,
     REFERENCE,
@@ -24,7 +25,8 @@ from tvcbench.sequence import (
 )
 
 QUIET = {"tare": {"seconds": 0}, "warmup": {"seconds": 0},
-         "idle": {"pre_s": 0, "post_s": 0}, "chirp": {"enabled": False}}
+         "idle": {"pre_s": 0, "post_s": 0}, "chirp": {"enabled": False},
+         "post_stop": {"seconds": 0}}
 
 
 def plan(**overrides):
@@ -62,7 +64,7 @@ class TestStructure:
         assert k[0] == TARE
         assert k[1] == WARMUP
         assert k[2] == IDLE_PRE
-        assert k[-1] == IDLE_POST
+        assert k[-2:] == [IDLE_POST, POST_STOP]
         assert RAMP_DOWN in k
         # The ramp down comes after every measurement step.
         assert k.index(RAMP_DOWN) > max(i for i, x in enumerate(k) if x == STEP)
@@ -97,7 +99,26 @@ class TestStructure:
 
     def test_zero_length_phases_are_omitted(self):
         segs, _ = sequence.expand(bare())
-        assert not {TARE, WARMUP, IDLE_PRE, IDLE_POST, CHIRP} & set(kinds(segs))
+        assert not ({TARE, WARMUP, IDLE_PRE, IDLE_POST, CHIRP, POST_STOP}
+                    & set(kinds(segs)))
+
+    def test_post_stop_is_last_and_at_minimum(self):
+        """It is the window with nothing commanding the outputs; minimum is where
+        a lapsed actuator-test command leaves them."""
+        segs, _ = sequence.expand(plan(post_stop={"seconds": 7}))
+        last = segs[-1]
+        assert last.kind == POST_STOP
+        assert (last.a_us, last.b_us) == (1000, 1000)
+        assert last.dwell_s == 7
+        assert not last.adaptive
+        assert last.record
+
+    def test_post_stop_time_is_costed_into_the_plan(self):
+        """`plan show` must not understate a run by the length of its tail."""
+        with_tail = sequence.expand(bare(post_stop={"seconds": 10}))[0]
+        without = sequence.expand(bare())[0]
+        assert (sequence.duration_s(with_tail)[1]
+                == pytest.approx(sequence.duration_s(without)[1] + 10))
 
 
 class TestChirp:

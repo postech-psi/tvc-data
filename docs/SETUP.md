@@ -1,247 +1,235 @@
-# Bench setup and data provenance
+# 벤치 셋업 및 데이터 출처(provenance)
 
-Authoritative description of what measures what. Read this before analyzing
-anything — several columns in the raw files are vestigial, and treating them as
-real is the easiest way to get a wrong answer.
+무엇이 무엇을 측정하는가에 대한 권위 있는 설명. 무엇이든 분석하기 전에 이것을
+읽을 것 — 원시 파일의 여러 열은 흔적기관(vestigial) 같은 것이며, 이를 실제로
+취급하는 것이 틀린 답을 얻는 가장 쉬운 길이다.
 
-## Architecture
+## 아키텍처
 
 ```
    ┌──────────────────┐   MAVLink (UART, 921600)   ┌──────────────────┐
    │  Raspberry Pi 5  │ ─────────────────────────► │     Pixhawk      │
    │ pwm_thrust_map.py│ ◄───────────────────────── │   (PX4, FMU_V6C) │
    └──────────────────┘   SERVO_OUTPUT_RAW 20 Hz   └──────────────────┘
-        │  commands            BATTERY_STATUS 10 Hz     │  PWM out
-        │  the PWM                                      ▼
+        │  PWM을               BATTERY_STATUS 10 Hz     │  PWM 출력
+        │  지령                                         ▼
         │                                          ┌──────────┐
-        │  writes                                  │ ESC+motor│
+        │  기록                                    │ ESC+모터 │
         ▼                                          └──────────┘
-   thrust_map_<epoch>.csv                               │ thrust
+   thrust_map_<epoch>.csv                               │ 추력
                                                         ▼
-   ┌──────────────────┐   USB serial 115200    ┌──────────────────┐
-   │  bench laptop    │ ◄───────────────────── │  STM32 + load    │
-   │     gui.py       │                        │  cell / torque   │
+   ┌──────────────────┐   USB 시리얼 115200    ┌──────────────────┐
+   │  벤치 노트북      │ ◄───────────────────── │  STM32 + 로드    │
+   │     gui.py       │                        │  셀 / 토크       │
    └──────────────────┘                        └──────────────────┘
-        │  writes
+        │  기록
         ▼
    data_<date>_<time>.csv
 ```
 
-The Pixhawk also writes its own `.ulg` to SD continuously across a whole
-session.
+Pixhawk는 또한 세션 전체에 걸쳐 자신의 `.ulg`를 SD에 연속적으로 기록한다.
 
-## Who is authoritative for what
+## 무엇에 대해 무엇이 권위 있는가
 
-| Quantity | Authoritative source | Do **not** use |
+| 물리량 | 권위 있는 출처 | 사용하지 **말 것** |
 |---|---|---|
-| Commanded PWM | `thrust_map_*.csv` (`a_cmd_us`, `b_cmd_us`, `phase`) | `pwm` in `data_*.csv` |
-| Measured PWM output | `thrust_map_*.csv` (`servo1_raw`, `servo2_raw`) or the `.ulg` | — |
-| Battery voltage / current | `thrust_map_*.csv` (`voltage_v`, `current_a`) or the `.ulg` | `Current_mA`, `ADC_Current_mA` in `data_*.csv` |
-| **Thrust** | `data_*.csv` — `Fz`, in newtons | — |
-| **Torque** | `data_*.csv` — `Tz`, in N·m | — |
-| RPM | *not currently measured* | `rpm` in `data_*.csv` |
+| 지령 PWM | `thrust_map_*.csv` (`a_cmd_us`, `b_cmd_us`, `phase`) | `data_*.csv`의 `pwm` |
+| 측정된 PWM 출력 | `thrust_map_*.csv` (`servo1_raw`, `servo2_raw`) 또는 `.ulg` | — |
+| 배터리 전압 / 전류 | `thrust_map_*.csv` (`voltage_v`, `current_a`) 또는 `.ulg` | `data_*.csv`의 `Current_mA`, `ADC_Current_mA` |
+| **추력** | `data_*.csv` — `Fz`, 뉴턴 | — |
+| **토크** | `data_*.csv` — `Tz`, N·m | — |
+| RPM | *현재 측정하지 않음* | `data_*.csv`의 `rpm` |
 
-### Why the stand's own columns are dead
+### 왜 스탠드 자체의 열은 죽어 있는가
 
-`gui.py` was originally written to drive the ESC itself and to read RPM and
-current from the STM32. In the current architecture the **Pi commands the motor
-through the Pixhawk**, so:
+`gui.py`는 원래 ESC 자체를 구동하고 STM32에서 RPM과 전류를 읽도록 작성되었다.
+현재 아키텍처에서는 **Pi가 Pixhawk를 통해 모터를 지령**하므로:
 
-- `pwm` sits at 1000 forever — the STM32 never sees the throttle command.
-- `rpm` is 0 or garbage — no RPM sensor is wired.
-- `Current_mA` is 0 and `ADC_Current_mA` is empty — the Pixhawk's battery
-  monitor is the current/voltage source.
+- `pwm`은 영원히 1000에 머문다 — STM32는 스로틀 지령을 결코 보지 못한다.
+- `rpm`은 0 또는 쓰레기 값이다 — RPM 센서가 배선되어 있지 않다.
+- `Current_mA`는 0이고 `ADC_Current_mA`는 비어 있다 — 전류/전압 출처는
+  Pixhawk의 배터리 모니터이다.
 
-**This is expected, not a fault.** `tvctools index` reports these as
-`gui_pwm_unused` / `gui_rpm_unused` / `gui_current_unused` under a "By design"
-heading, separate from real problems.
+**이것은 결함이 아니라 예상된 것이다.** `tvctools index`는 이들을 실제 문제와
+분리하여 "By design(설계상)" 항목 아래 `gui_pwm_unused` / `gui_rpm_unused` /
+`gui_current_unused`로 보고한다.
 
-The practical consequence: `plot.py`'s `aggregate_by_pwm()` groups by the `pwm`
-column and **cannot be used on any 2026-07-24 file** — every sample would land
-in a single bin. PWM must come from the paired `thrust_map` file. Only
-`raw/2026-07-20/loadcell/data_20260720_183744.csv`, recorded before the Pi took over, has a real
-PWM sweep in it.
+실질적 결과: `plot.py`의 `aggregate_by_pwm()`은 `pwm` 열로 그룹화하므로 **어떤
+2026-07-24 파일에서도 사용할 수 없다** — 모든 샘플이 단일 빈(bin)에 들어갈 것이다.
+PWM은 짝을 이루는 `thrust_map` 파일에서 와야 한다. Pi가 인계받기 전에 기록된
+`raw/2026-07-20/loadcell/data_20260720_183744.csv`만이 그 안에 실제 PWM 스윕을
+가지고 있다.
 
-## The two problems this creates
+## 이것이 만드는 두 가지 문제
 
-### 1. No shared clock
+### 1. 공유 클록 없음
 
-| Stream | Clock | Rate |
+| 스트림 | 클록 | 속도 |
 |---|---|---|
-| `thrust_map_*.csv` | `t_epoch` — Pi wall clock, **UTC** | 20 Hz |
-| `data_*.csv` | `t_ms` — free-running STM32 uptime, **not** epoch | 50 Hz |
-| `.ulg` | PX4 boot time, µs | 5–10 Hz |
+| `thrust_map_*.csv` | `t_epoch` — Pi 벽시계, **UTC** | 20 Hz |
+| `data_*.csv` | `t_ms` — 자유 진행 STM32 가동 시간, epoch **아님** | 50 Hz |
+| `.ulg` | PX4 부팅 시간, µs | 5–10 Hz |
 
-Nothing links them. The load cell's filename is written in **bench-local time
-(KST, UTC+9)** while the Pixhawk log's epoch is UTC — a 9-hour offset that must
-be applied before anything lines up. See "How alignment works" in the top-level
-[README](../README.md).
+어떤 것도 이들을 연결하지 않는다. 로드셀의 파일명은 **벤치 로컬 시간(KST, UTC+9)**으로
+쓰이는 반면 Pixhawk 로그의 epoch은 UTC이다 — 무엇이든 정렬되기 전에 적용해야 하는
+9시간 오프셋이다. 최상위 [README](../README.md)의 "정렬이 작동하는 방식"을 참고할 것.
 
-### 2. Thrust noise exceeds the step size
+### 2. 추력 잡음이 계단 크기를 초과함
 
-Measured on this bench, within a held command step:
+이 벤치에서 측정한, 유지된 지령 계단 내에서:
 
-| | value |
+| | 값 |
 |---|---|
-| Within-step thrust noise (σ) | ≈ 0.7 N |
-| Thrust change per 100 µs step | 0.65 – 1.5 N |
-| Separation between adjacent steps | **1.1 – 2.1 σ** |
+| 계단 내 추력 잡음 (σ) | ≈ 0.7 N |
+| 100 µs 계단당 추력 변화 | 0.65 – 1.5 N |
+| 인접 계단 간 분리 | **1.1 – 2.1 σ** |
 
-So a single sample genuinely cannot tell one PWM step from the next, and looking
-for step edges *in the thrust signal* does not work.
+따라서 단일 샘플로는 한 PWM 계단을 다음 것과 진정 구별할 수 없으며, *추력 신호에서*
+계단 에지를 찾는 것은 통하지 않는다.
 
-It is also unnecessary: the Pi commanded those steps and logged them with
-timestamps, so **segment by the command, not by the thrust**. Averaging the
-settled portion of each step gives a standard error of ≈ 0.11 N against
-increments of 0.65–1.5 N — a 6–14 σ separation.
+또한 그럴 필요도 없다: Pi가 그 계단들을 지령하고 타임스탬프와 함께 기록했으므로,
+**추력이 아니라 지령으로 구간을 나눈다.** 각 계단의 안정된 부분을 평균하면
+0.65–1.5 N 증분에 대해 표준오차 ≈ 0.11 N를 준다 — 6–14 σ 분리이다.
 
-The noise is propeller/motor vibration, not white measurement error: lag-1
-autocorrelation is ≈ 0.5 and the integrated autocorrelation time is ≈ 4 samples.
-Naive σ/√n therefore understates the error by about 2×, so `tvctools` divides by
-the *effective* sample size instead. Error bars are wider and honest.
+잡음은 백색 측정 오차가 아니라 프로펠러/모터 진동이다: 지연-1 자기상관은 ≈ 0.5이고
+적분 자기상관 시간은 ≈ 4 샘플이다. 따라서 순진한 σ/√n은 오차를 약 2배 과소평가하므로,
+`tvctools`는 대신 *유효* 표본 크기로 나눈다. 오차 막대는 더 넓고 정직하다.
 
-Verify visually with the per-run `steps.png`: raw trace in grey, command
-staircase in blue, step means with error bars in red. On `r04_005108_1300` the
-same step repeats to within ~1 % across four sweeps (2.85 / 2.84 / 2.83 / 2.98 N).
+실행별 `steps.png`로 시각적으로 검증할 것: 원시 트레이스는 회색, 지령 계단은 파랑,
+오차 막대가 있는 계단 평균은 빨강. `r04_005108_1300`에서 같은 계단이 네 스윕에
+걸쳐 ~1% 이내로 반복된다 (2.85 / 2.84 / 2.83 / 2.98 N).
 
-## Coaxial rig: both rotor commands matter
+## 동축 장비: 두 로터 지령이 모두 중요하다
 
-This is a **coaxial counter-rotating** setup. `a_cmd_us` (rotor A) and
-`b_cmd_us` (rotor B) are independent inputs, and the outputs depend on both:
+이것은 **동축 역회전(coaxial counter-rotating)** 셋업이다. `a_cmd_us`(로터 A)와
+`b_cmd_us`(로터 B)는 독립적인 입력이며, 출력은 둘 다에 의존한다:
 
-- **Thrust** rises with either rotor.
-- **Reaction torque `Tz` changes sign.** It is the *difference* between the two
-  rotors' drag torques, so it crosses zero when they balance. Measured: at
-  A = 1300 µs, Tz runs −0.03 → +0.15 N·m as B goes 1000 → 2000, crossing zero
-  near B ≈ 1300. The zero-torque line sits close to A ≈ B, as expected.
+- **추력**은 어느 로터로든 상승한다.
+- **반작용 토크 `Tz`는 부호가 바뀐다.** 이것은 두 로터의 항력 토크의 *차이*이므로,
+  이들이 균형을 이룰 때 0을 지난다. 측정: A = 1300 µs에서 B가 1000 → 2000으로 갈 때
+  Tz는 −0.03 → +0.15 N·m로 진행하며, B ≈ 1300 근처에서 0을 지난다. 무토크 선은
+  예상대로 A ≈ B에 가까이 놓인다.
 
-Because of this, **never collapse the map onto a single PWM axis** — a
-thrust-vs-PWM curve averaged over A hides the torque behaviour entirely.
-`tvctools map` therefore emits:
+이 때문에 **맵을 단일 PWM 축으로 결코 뭉개지 말 것** — A에 걸쳐 평균한
+추력-vs-PWM 곡선은 토크 거동을 전부 숨긴다. 따라서 `tvctools map`은 다음을
+내보낸다:
 
-- `pwm_thrust_torque_map.csv` — every steady-state point with both `a_cmd_us`
-  and `b_cmd_us`
-- `pwm_thrust_torque_map.png` — thrust/torque/efficiency vs B, one curve per A
-- `coax_grid.png` — thrust and torque as 2-D maps over the (A, B) plane
+- `pwm_thrust_torque_map.csv` — `a_cmd_us`와 `b_cmd_us`를 모두 가진 모든 정상상태 지점
+- `pwm_thrust_torque_map.png` — 추력/토크/효율 vs B, A마다 곡선 하나
+- `coax_grid.png` — (A, B) 평면 위의 추력과 토크의 2차원 맵
 
-Current coverage is 36 of 72 (A, B) cells: A ∈ {1300, 1400, 1500, 1700, 1800,
-1850}, B ∈ 12 values. The A = 1700/1800/1850 points are diagonal-only (A = B).
-Filling the off-diagonal cells is what would make the torque map complete.
+현재 커버리지는 72개 (A, B) 칸 중 36개이다: A ∈ {1300, 1400, 1500, 1700, 1800,
+1850}, B ∈ 12개 값. A = 1700/1800/1850 지점은 대각선 전용(A = B)이다.
+비대각 칸을 채우는 것이 토크 맵을 완성할 방법이다.
 
-## Sampling rates
+## 샘플링 속도
 
-| Stream | Raw rate | Notes |
+| 스트림 | 원시 속도 | 비고 |
 |---|---|---|
-| Load cell (`data_*.csv`) | **50 Hz** | uniform across all 16 files; `t_ms` steps of exactly 20 ms |
-| `thrust_map_*.csv` | 20 Hz servo, 10 Hz battery | |
+| 로드셀 (`data_*.csv`) | **50 Hz** | 16개 파일 전체에서 균일; `t_ms`가 정확히 20 ms씩 증가 |
+| `thrust_map_*.csv` | 서보 20 Hz, 배터리 10 Hz | |
 | `.ulg` `actuator_outputs` | 10 Hz | |
 | `.ulg` `battery_status` | 5 Hz | |
 
-The merge grid is **50 Hz**, matching the load cell. Thrust is the noisy channel
-that benefits most from every available sample; downsampling to 20 Hz threw away
-60 % of the force data. Commands are zero-order held onto the finer grid (exact,
-since they are staircases) and voltage/current interpolated, so carrying the
-slower Pixhawk streams onto the faster grid invents nothing.
+병합 격자는 로드셀에 맞춘 **50 Hz**이다. 추력은 가용한 모든 샘플에서 가장 큰
+이득을 얻는 잡음 채널이다; 20 Hz로 다운샘플링하면 힘 데이터의 60%를 버렸다.
+지령은 (계단이므로 정확하게) 더 미세한 격자로 0차 홀드되고 전압/전류는 보간되므로,
+느린 Pixhawk 스트림을 더 빠른 격자로 옮겨도 아무것도 지어내지 않는다.
 
-Note the ulog is the **lowest**-rate source of PWM and voltage, at half the
-thrust_map rate.
+ulog는 PWM과 전압의 **가장 낮은** 속도 출처로, thrust_map 속도의 절반임에 유의할 것.
 
-## Why `thrust_map_*.csv` cannot be replaced by the ulog
+## 왜 `thrust_map_*.csv`는 ulog로 대체될 수 없는가
 
-The PWM and voltage *values* are indeed duplicated in the ulog, but the ulog has
-no usable absolute time:
+PWM과 전압 *값*은 실제로 ulog에 중복되어 있지만, ulog에는 사용 가능한 절대 시간이
+없다:
 
-- `time_ref_utc` is 0 in all six logs — no GPS time reference.
-- **The filename is wrong**, by 6 s to 54 min. `log_3_2026-7-24-00-27-40.ulg`
-  actually starts at 00:21:42; `log_3_2026-7-24-17-11-46.ulg` starts at 16:17:56.
-- The `/fs/microsd/log/...` message records the first log of the boot, not the
-  file it appears in.
+- `time_ref_utc`가 여섯 로그 모두에서 0이다 — GPS 시간 참조 없음.
+- **파일명이 틀리다**, 6초에서 54분까지. `log_3_2026-7-24-00-27-40.ulg`는
+  실제로 00:21:42에 시작한다; `log_3_2026-7-24-17-11-46.ulg`는 16:17:56에 시작한다.
+- `/fs/microsd/log/...` 메시지는 그것이 나타나는 파일이 아니라 그 부팅의 첫 로그를
+  기록한다.
 
-`thrust_map_*.csv` carries `t_fc_us` (the FC boot clock) **and** `t_epoch` (the
-Pi's wall clock) on every row. Their median difference is the boot-to-epoch
-offset, and it is the only thing that dates a ulog. Verified agreement between
-independent sweeps in the same log: **0.000–0.030 s**.
+`thrust_map_*.csv`는 모든 행에 `t_fc_us`(FC 부팅 클록) **와** `t_epoch`(Pi 벽시계)를
+담는다. 이들의 중앙값 차이가 부팅-대-epoch 오프셋이며, ulog에 날짜를 매기는 유일한
+수단이다. 같은 로그 내 독립 스윕 간의 검증된 일치: **0.000–0.030초**.
 
-Delete `thrust_map_*.csv` and the ulogs become un-timestampable, so they can
-never be aligned with the load cell. Keep them. The ulog remains valuable as an
-independent cross-check and for the idle/recovery periods outside each run.
+`thrust_map_*.csv`를 삭제하면 ulog는 타임스탬프를 매길 수 없게 되어, 로드셀과 결코
+정렬될 수 없다. 그러니 보관할 것. ulog는 독립적인 교차 확인으로서, 그리고 각 실행
+바깥의 유휴/회복 구간을 위해 여전히 가치가 있다.
 
-### One ulog holds many runs
+### 하나의 ulog가 여러 실행을 담는다
 
-A log spans an entire boot session, so it contains several runs.
-`log_3_2026-7-24-17-11-46.ulg` covers all ten runs of session 2 across 54
-minutes. `tvctools build` records, per run, which log covers it and the FC-time
-window to slice (`ulog` block in `run.json`).
+로그는 부팅 세션 전체에 걸치므로 여러 실행을 포함한다.
+`log_3_2026-7-24-17-11-46.ulg`는 54분에 걸쳐 세션 2의 열 개 실행 모두를 커버한다.
+`tvctools build`는 실행별로 어느 로그가 그것을 커버하는지와 잘라낼 FC-시간
+창(`run.json`의 `ulog` 블록)을 기록한다.
 
-Runs are located inside a log two ways: a swept command is matched by
-correlating its PWM trace (corr ≥ 0.9), and a **constant hold** — which has no
-shape to correlate — is located by epoch containment once a sweep has fixed the
-offset. Matching a constant hold on PWM *level* was tried and rejected: an idle
-1000 µs matches every quiet stretch of every log.
+로그 안에서 실행은 두 가지 방식으로 위치가 찾아진다: 스윕 지령은 그 PWM 트레이스를
+상관시켜(corr ≥ 0.9) 일치시키고, **정상 홀드** — 상관시킬 형상이 없는 — 는 스윕이
+오프셋을 고정한 뒤 epoch 포함으로 위치를 찾는다. 정상 홀드를 PWM *레벨*로 일치시키는
+것은 시도했다가 기각되었다: 유휴 1000 µs는 모든 로그의 모든 조용한 구간과 일치한다.
 
-### Duplicate logs
+### 중복 로그
 
-`log_1_2026-7-24-01-07-24.ulg` is a byte-identical **prefix** of
-`log_1_2026-7-24-01-16-18.ulg` — the same boot downloaded twice. The shorter
-copy is flagged `duplicate_of` and excluded from per-run attachment. Two logs
-(`log_2`, `log_4`) contain **no motor activity at all** and cannot be dated.
+`log_1_2026-7-24-01-07-24.ulg`는 `log_1_2026-7-24-01-16-18.ulg`의 바이트 단위 동일한
+**접두부(prefix)**이다 — 같은 부팅을 두 번 다운로드한 것이다. 더 짧은 사본은
+`duplicate_of`로 표시되어 실행별 부착에서 제외된다. 두 로그(`log_2`, `log_4`)는
+**모터 활동이 전혀 없어** 날짜를 매길 수 없다.
 
-## Test campaigns on record
+## 기록에 있는 테스트 캠페인
 
-| Session | Local time | What it is |
+| 세션 | 로컬 시간 | 무엇인가 |
 |---|---|---|
-| `2026-07-20_s1`, `_s2` | 16:47, 18:34 | Early stand-alone load-cell runs, before the Pi drove the motor. `raw/2026-07-20/loadcell/data_20260720_183744.csv` has a genuine PWM sweep. |
-| `2026-07-23_s1` | 18:33 | `1000_F.csv` — A axis fixed at 1000. Pixhawk data only, no load cell. |
-| `2026-07-24_s1` | 00:05 – 01:16 | **PWM → thrust/torque sweeps.** A fixed at 1300/1400/1500, B swept 1000→2000 in 100 µs steps, repeated 3–4×. |
-| `2026-07-24_s2` | 16:20 – 17:10 | **Voltage-sag test.** Constant command, repeated as the pack drained. Seven holds at `A1850_B1850`, 11.32 V → 10.46 V. |
+| `2026-07-20_s1`, `_s2` | 16:47, 18:34 | Pi가 모터를 구동하기 전, 초기 독립형 로드셀 실행. `raw/2026-07-20/loadcell/data_20260720_183744.csv`에 진짜 PWM 스윕이 있다. |
+| `2026-07-23_s1` | 18:33 | `1000_F.csv` — A 축이 1000에 고정. Pixhawk 데이터만, 로드셀 없음. |
+| `2026-07-24_s1` | 00:05 – 01:16 | **PWM → 추력/토크 스윕.** A를 1300/1400/1500에 고정, B를 1000→2000까지 100 µs 계단으로 스윕, 3–4회 반복. |
+| `2026-07-24_s2` | 16:20 – 17:10 | **전압 새그 테스트.** 정상 지령을 팩이 방전됨에 따라 반복. `A1850_B1850`에서 일곱 번 홀드, 11.32 V → 10.46 V. |
 
-## Reading the voltage-sag result
+## 전압 새그 결과 읽기
 
-`tvctools map` reports thrust vs voltage at constant PWM, but only where the
-voltage differences are real. Two confounds are excluded automatically:
+`tvctools map`은 일정 PWM에서 추력 vs 전압을 보고하지만, 전압 차이가 실제인
+곳에서만 그렇다. 두 가지 교란 요인이 자동으로 제외된다:
 
-1. **Repeated sweeps inside one run** are the same battery state seconds apart.
-   Counting them separately fakes a big sample across a tiny voltage span, so
-   points are averaged per run first.
-2. **Within a sweep, voltage is low *because* thrust is high** — the motor's own
-   current causes the sag. Correlating the two measures reverse causation and
-   produces a negative slope, which is physically impossible for a draining
-   pack. Groups spanning < 0.4 V, or fitting a negative slope, are rejected.
+1. **한 실행 내의 반복 스윕**은 수 초 간격의 같은 배터리 상태이다. 이를 따로 세면
+   미미한 전압 범위에 걸쳐 큰 표본인 척하게 되므로, 지점들을 먼저 실행별로 평균한다.
+2. **스윕 내에서, 추력이 높기 *때문에* 전압이 낮다** — 모터 자체의 전류가 새그를
+   일으킨다. 이 둘을 상관시키면 역인과를 측정하여 음의 기울기를 낳는데, 이는 방전
+   중인 팩에 대해 물리적으로 불가능하다. < 0.4 V에 걸치거나 음의 기울기를 피팅하는
+   그룹은 기각된다.
 
-Only `A1850_B1850` survives, which is exactly the intended sag test:
+`A1850_B1850`만 살아남는데, 이는 정확히 의도된 새그 테스트이다:
 
 ```
 10.46 - 11.32 V  ->  12.68 - 14.64 N
 dThrust/dV = 2.15 N/V     thrust ~ V^1.71     r = 0.972
-13.4 % of thrust lost across the discharge
+방전 전반에 걸쳐 추력의 13.4% 손실
 ```
 
-The exponent near 2 is the expected result: momentum theory gives thrust ∝ RPM²,
-and RPM ∝ voltage for a fixed-pitch prop on a constant duty command.
+2에 가까운 지수는 예상된 결과이다: 운동량 이론은 추력 ∝ RPM²를 주고, 정상 듀티
+지령의 고정 피치 프로펠러에서는 RPM ∝ 전압이다.
 
-Run `python -m tvctools map --show-rejected` to see why each other group was
-excluded.
+각 다른 그룹이 왜 제외되었는지 보려면 `python -m tvctools map --show-rejected`를
+실행할 것.
 
-## Pixhawk configuration required
+## 요구되는 Pixhawk 구성
 
-From the header of `pwm_thrust_map.py`:
+`pwm_thrust_map.py`의 헤더에서:
 
-- QGC actuator outputs: `Minimum = 1000`, `Maximum = 2000`, `Disarmed = 1000`
-- `THR_MDL_FAC = 0` (no thrust-model linearization — the map must measure the
-  raw relationship)
-- The FC must be **disarmed**; motion is driven by `MAV_CMD_ACTUATOR_TEST` (310)
-- Telemetry on `/dev/ttyAMA0 @ 921600` from the Pi 5
+- QGC 액추에이터 출력: `Minimum = 1000`, `Maximum = 2000`, `Disarmed = 1000`
+- `THR_MDL_FAC = 0` (추력 모델 선형화 없음 — 맵은 원시 관계를 측정해야 한다)
+- FC는 **비무장(disarmed)** 상태여야 한다; 동작은 `MAV_CMD_ACTUATOR_TEST` (310)으로
+  구동된다
+- Pi 5로부터 `/dev/ttyAMA0 @ 921600`의 텔레메트리
 
-## Recording new runs
+## 새 실행 기록하기
 
-Set the output folder and the free-text metadata in the web GUI
-(`pwm_map_gui.html`) so runs no longer land unlabelled in the working directory.
-Settings that never appear in the CSV — `dwell_s`, `repeats`, grid range, prop,
-battery, notes — are written beside it as `<name>.run.json`, which `tvctools`
-reads back into the catalog.
+웹 GUI(`pwm_map_gui.html`)에서 출력 폴더와 자유 텍스트 메타데이터를 설정하여, 실행이
+더 이상 작업 디렉터리에 라벨 없이 떨어지지 않도록 한다. CSV에는 결코 나타나지 않는
+설정 — `dwell_s`, `repeats`, 격자 범위, 프로펠러, 배터리, 노트 — 은 그 옆에
+`<name>.run.json`으로 쓰이며, `tvctools`가 이를 카탈로그로 다시 읽어들인다.
 
-For `gui.py`, set `CSV_OUT_DIR` in the file or `TVC_CSV_DIR` in the environment.
+`gui.py`의 경우, 파일에서 `CSV_OUT_DIR`을 설정하거나 환경에서 `TVC_CSV_DIR`을
+설정한다.
 
-Recommended step timing, from the settling analysis: **4 s per step** (≈1.5 s
-discarded as transient + ≈2.5 s averaged). The current 2.4 s works but leaves
-little margin.
+안정화 분석에서 나온 권장 계단 타이밍: **계단당 4초** (≈1.5초는 과도 구간으로
+버림 + ≈2.5초는 평균). 현재의 2.4초도 작동하지만 여유가 거의 없다.

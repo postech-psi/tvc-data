@@ -199,8 +199,13 @@ def plot_sag(rows, sag, out_path):
         return None
     fig, axes = plt.subplots(1, len(sag), figsize=(6 * len(sag), 5), squeeze=False)
     for ax, grp in zip(axes[0], sag):
-        pts = [r for r in rows
-               if r["a_cmd_us"] == grp["a_cmd_us"] and r["b_cmd_us"] == grp["b_cmd_us"]]
+        # Plot exactly the points build_sag fit -- per-run means on the same
+        # voltage basis as the slope/intercept. Re-deriving them from `rows`
+        # here would pick the loaded voltage while the fit uses the no-load
+        # voltage, leaving the line shifted off the data.
+        pts = grp.get("points")
+        if not pts:
+            continue
         v = np.array([p["voltage_v"] for p in pts], dtype=float)
         t = np.array([p["thrust_N"] for p in pts], dtype=float)
         e = np.array([p["thrust_sem"] for p in pts], dtype=float)
@@ -214,7 +219,9 @@ def plot_sag(rows, sag, out_path):
             ax.annotate(p["run"].split("_")[0], (p["voltage_v"], p["thrust_N"]),
                         textcoords="offset points", xytext=(6, -3), fontsize=7,
                         color="#555")
-        ax.set_xlabel("pack voltage under load [V]")
+        basis = grp.get("voltage_basis", "loaded")
+        ax.set_xlabel("no-load pack voltage [V]" if basis == "noload"
+                      else "pack voltage under load [V]")
         ax.set_ylabel("thrust [N]")
         ax.set_title("Constant command A%d_B%d\nthrust ~ V^%.2f, %.1f%% loss over %.2f V"
                      % (grp["a_cmd_us"], grp["b_cmd_us"], grp["exponent_k"],

@@ -56,6 +56,12 @@ DEFAULTS = {
     # pack's actual state of charge, uncontaminated by IR drop under load.
     "idle": {"pre_s": 10.0, "post_s": 10.0},
 
+    # Keep recording after the motors have been stopped, with nothing commanding
+    # the outputs at all. Measures the load cell's zero at the end of the run --
+    # the drift against the opening tare, which biases every step -- and the
+    # pack's recovered open-circuit voltage. 0 disables.
+    "post_stop": {"seconds": 10.0},
+
     "tare": {"seconds": 10.0},
     "warmup": {"seconds": 3.0},
     "ramp": {"steps": 8, "seconds": 0.4},
@@ -204,7 +210,7 @@ class Plan:
         if ramp["seconds"] <= 0:
             problems.append("ramp.seconds must be > 0")
 
-        for name in ("tare", "warmup"):
+        for name in ("tare", "warmup", "post_stop"):
             if d[name]["seconds"] < 0:
                 problems.append(f"{name}.seconds must be >= 0")
         for name in ("pre_s", "post_s"):

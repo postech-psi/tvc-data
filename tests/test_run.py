@@ -27,6 +27,7 @@ FAST_PLAN = {
     "order": {"mode": "sequential"},
     "dwell": {"mode": "fixed", "fixed_s": 0.25},
     "idle": {"pre_s": 0.1, "post_s": 0.1},
+    "post_stop": {"seconds": 0.3},
     "tare": {"seconds": 0.2},
     "warmup": {"seconds": 0.1},
     "ramp": {"steps": 2, "seconds": 0.1},
@@ -191,6 +192,106 @@ class TestCompleteRun:
         steps = {(int(r["a_us"]), int(r["b_us"])): float(r["thrust_mean_n"] or 0)
                  for r in h.rows("sequence.csv") if r["kind"] == "step"}
         assert steps[(1300, 2000)] > steps[(1300, 1000)]
+
+
+class TestPostStopWindow:
+    """
+    The stretch of recording after the motors are stopped.
+
+    Its value is the zero: the tare is measured once at the start and every step
+    is reported against it, so measuring the same quantity again at the end is
+    the only thing that says whether it held.
+    """
+
+    def _post_stop_row(self, harness):
+        rows = [r for r in harness.rows("sequence.csv") if r["kind"] == "post_stop"]
+        assert len(rows) == 1
+        return rows[0]
+
+    def test_recorded_as_the_final_segment(self, done):
+        h, _ = done
+        row = self._post_stop_row(h)
+        assert int(row["seg_id"]) == len(h.runner.segments) - 1
+        assert float(row["actual_dwell_s"]) >= float(row["planned_dwell_s"])
+
+    def test_the_run_loop_never_executes_it(self, done):
+        """It belongs to the shutdown path -- ticking the actuator there would
+        undo the stop it just performed."""
+        h, _ = done
+        seg_id = int(self._post_stop_row(h)["seg_id"])
+        assert seg_id not in [s.seg_id for s in h.runner.live_segments]
+
+        events = [json.loads(line) for line in h.read("events.jsonl").splitlines()]
+        assert not [e for e in events
+                    if e["kind"] == "segment_start" and e.get("seg_id") == seg_id]
+
+    def test_samples_keep_arriving_after_the_motors_stop(self, done):
+        h, _ = done
+        seg_id = int(self._post_stop_row(h)["seg_id"])
+        after = [r for r in h.rows("loadcell.csv") if int(r["seg_id"]) == seg_id]
+        assert len(after) > 5
+
+        events = [json.loads(line) for line in h.read("events.jsonl").splitlines()]
+        kinds = [e["kind"] for e in events]
+        assert kinds.index("motors_stopped") < kinds.index("post_stop_start")
+
+        # Most of the window is genuinely after the stop. Not all of it: the
+        # first drain hands over whatever the source buffered while `stop()` was
+        # repeating its command, and those samples predate it -- the same
+        # boundary caveat that applies to every other segment.
+        stopped = next(e for e in events if e["kind"] == "motors_stopped")
+        assert sum(1 for r in after
+                   if float(r["t_mono"]) > stopped["t_mono"]) > len(after) / 2
+
+    def test_manifest_carries_the_zero_and_the_recovered_voltage(self, done):
+        _, manifest = done
+        post = manifest["post_stop"]
+        assert post["reason"] == "planned"
+        assert post["n_loadcell"] > 0
+        assert post["zero_thrust_n"] is not None
+        assert post["voltage_v"] > 0
+
+    def test_the_zero_is_measured_once_the_rotors_have_stopped(self, tmp_path):
+        """A tail long enough to settle reads the tare back, not the coast-down."""
+        h = Harness(tmp_path, plan=make_plan(idle={"pre_s": 0.1, "post_s": 0.5},
+                                             post_stop={"seconds": 1.5}))
+        manifest = h.run()
+        assert manifest["post_stop"]["zero_thrust_n"] == pytest.approx(0.0, abs=0.3)
+        assert not [w for w in manifest["warnings"] if "zero" in w]
+
+    def test_a_drifted_zero_is_reported_not_silently_absorbed(self, tmp_path):
+        """The stand loaded after taring: the same signature as a drifted zero,
+        and the whole map would be out by that much."""
+        h = Harness(tmp_path, plan=make_plan(idle={"pre_s": 0.1, "post_s": 0.5},
+                                             post_stop={"seconds": 1.5}))
+        h.loadcell.start()
+        h.mavlink.start()
+        try:
+            # The stand's dead load is -9.3 N; taring at -5.0 leaves 4.3 N of it
+            # in every reading, exactly as a zero that moved mid-run would.
+            h.runner._apply_tare = lambda samples: h.loadcell.set_tare({"Fz": -5.0})
+            manifest = h.runner.run()
+        finally:
+            h.loadcell.stop()
+            h.mavlink.stop()
+
+        assert manifest["post_stop"]["zero_thrust_n"] == pytest.approx(4.3, abs=0.3)
+        assert any("zero" in w for w in manifest["warnings"])
+
+    def test_still_recorded_when_the_run_aborts(self, tmp_path):
+        """An abort is when the state of the bench afterwards matters most."""
+        h = Harness(tmp_path, plan=make_plan(limits={"max_thrust_n": 1.0}))
+        manifest = h.run()
+        assert manifest["outcome"] == "aborted"
+        assert manifest["post_stop"]["n_loadcell"] > 0
+        assert self._post_stop_row(h)["kind"] == "post_stop"
+
+    def test_can_be_disabled(self, tmp_path):
+        h = Harness(tmp_path, plan=make_plan(post_stop={"seconds": 0}))
+        manifest = h.run()
+        assert manifest["post_stop"] is None
+        assert h.runner.post_stop is None
+        assert not [r for r in h.rows("sequence.csv") if r["kind"] == "post_stop"]
 
 
 class TestNoMotorMode:

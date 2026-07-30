@@ -1,196 +1,213 @@
-# Acquisition: `tvcbench`
+# 취득(Acquisition): `tvcbench`
 
-The Pi-side rewrite. `tvcbench` records; [`tvctools`](../tvctools) analyses.
+Pi 측 재작성. `tvcbench`가 기록하고; [`tvctools`](../tvctools)가 분석한다.
 
-## Why it exists
+## 왜 존재하는가
 
-The old arrangement had three clocks and no link between them:
+기존 방식은 클록이 세 개였고 그들 사이에 연결이 없었다:
 
-| Stream | Owner | Clock | Rate |
+| 스트림 | 소유자 | 클록 | 속도 |
 |---|---|---|---|
-| `thrust_map_*.csv` | Pi | `t_epoch`, UTC wall clock | ~18–20 Hz |
-| `data_*.csv` (Fx…Tz) | **bench laptop** | `t_ms`, STM32 uptime | 50 Hz |
-| `*.ulg` | Pixhawk SD | PX4 boot µs | 5–10 Hz |
+| `thrust_map_*.csv` | Pi | `t_epoch`, UTC 벽시계 | ~18–20 Hz |
+| `data_*.csv` (Fx…Tz) | **벤치 노트북** | `t_ms`, STM32 가동 시간 | 50 Hz |
+| `*.ulg` | Pixhawk SD | PX4 부팅 µs | 5–10 Hz |
 
-Because force lived on a different machine from the commands, the entire timing
-chain was reconstructed afterwards — filename anchoring good to ~1 s, then
-cross-correlation, then a largest-edge cross-check, landing at about ±0.1 s and
-giving up entirely (`lag_method: "weak"`) on runs with too little command
-variance. See [PREPROCESSING.md](PREPROCESSING.md) for that machinery.
+힘이 지령과 다른 기계에 있었으므로, 전체 타이밍 사슬을 사후에 재구성해야 했다 —
+파일명 앵커링이 ~1초 정밀도, 그다음 상호상관, 그다음 최대-에지 교차 확인으로 약
+±0.1초에 안착했으며, 지령 분산이 너무 적은 실행에서는 완전히 포기했다
+(`lag_method: "weak"`). 그 기제에 대해서는 [PREPROCESSING.md](PREPROCESSING.md)를
+참고할 것.
 
-Moving the load cell onto the Pi removes the problem rather than improving it.
-One process stamps force and command on one clock, so there is nothing to align.
+로드셀을 Pi로 옮기는 것은 문제를 개선하는 것이 아니라 없앤다. 하나의 프로세스가
+힘과 지령을 하나의 클록에 찍으므로 정렬할 것이 없다.
 
-Three further defects are fixed along the way:
+그 과정에서 세 가지 추가 결함이 수정된다:
 
-- **No fabricated rates.** The old logger emitted a row only when
-  `SERVO_OUTPUT_RAW` arrived and carried the last voltage forward into it,
-  inventing a 20 Hz record of a 10 Hz quantity. Each stream is now its own file
-  at its own rate, joined only in analysis.
-- **No string keys.** `phase = "A1400_B1700"` could not distinguish two visits to
-  the same command. `seg_id` is an integer; `sequence.csv` holds the commands.
-- **The run is reproducible.** Settings came from an HTML form and were written
-  nowhere — the configured `dwell_s` was 2.0 while the measured step was 4.03 s,
-  with no record to explain it. A run is now a checked-in plan file, copied
-  verbatim into the manifest.
+- **조작된 속도 없음.** 기존 로거는 `SERVO_OUTPUT_RAW`가 도착할 때만 행을 내보내면서
+  마지막 전압을 그 안으로 이월(carry forward)했다. 10 Hz 물리량의 20 Hz 기록을
+  지어낸 것이다. 이제 각 스트림은 각자의 속도로 각자의 파일이며, 분석에서만
+  결합된다.
+- **문자열 키 없음.** `phase = "A1400_B1700"`은 같은 지령에 대한 두 번의 방문을
+  구별할 수 없었다. `seg_id`는 정수이다; `sequence.csv`가 지령을 담는다.
+- **실행이 재현 가능하다.** 설정이 HTML 폼에서 왔고 어디에도 기록되지 않았다 —
+  설정된 `dwell_s`는 2.0인데 측정된 계단은 4.03초였고, 이를 설명할 기록이 없었다.
+  이제 실행은 체크인된 계획 파일이며, 매니페스트에 그대로 복사된다.
 
-## Commands
+## 명령
 
 ```bash
-python -m tvcbench devices --probe                  # find the load cell, get a udev rule
-python -m tvcbench selftest --seconds 20            # the hardware gate; run before every session
-python -m tvcbench plan show plans/coax_grid.yaml   # expand, time and cost out a plan
-python -m tvcbench run plans/coax_grid.yaml --sim   # full dress rehearsal, no hardware
+python -m tvcbench devices --probe                  # 로드셀을 찾고, udev 규칙을 얻음
+python -m tvcbench selftest --seconds 20            # 하드웨어 게이트; 매 세션 전에 실행
+python -m tvcbench plan show plans/coax_grid.yaml   # 계획을 전개, 시간·비용 산출
+python -m tvcbench run plans/coax_grid.yaml --sim   # 하드웨어 없는 전체 리허설
 python -m tvcbench run plans/coax_grid.yaml --no-motor
 python -m tvcbench run plans/coax_grid.yaml
 ```
 
-## Before the first real run
+## 첫 실제 실행 전에
 
-Hosting the STM32 on the Pi introduces three risks, all of which corrupt data
-rather than stopping it. `selftest` reports each one.
+STM32를 Pi에 호스팅하면 세 가지 위험이 생기는데, 모두 실행을 멈추기보다 데이터를
+손상시킨다. `selftest`가 각각을 보고한다.
 
-1. **USB power.** The board powers itself *and* the bridge excitation over one
-   cable. A Pi 5 supplies ~1.6 A across its USB-A ports with the official 27 W
-   supply, but ~600 mA with a weaker one. A brownout resets the MCU and nothing
-   else says so — `selftest` watches the sample counters for a backwards jump.
-   Prefer a powered hub.
-2. **Ground loop.** The Pi now shares ground with the STM32 and the Pixhawk
-   around a frame carrying motor current. Record a baseline on the laptop, then
-   compare:
+1. **USB 전원.** 보드는 하나의 케이블로 자신에게 전원을 공급하고 *동시에* 브리지
+   여자(excitation)도 공급한다. Pi 5는 공식 27 W 공급기로 USB-A 포트 전체에 걸쳐
+   ~1.6 A를 공급하지만, 약한 것으로는 ~600 mA만 공급한다. 브라운아웃은 MCU를
+   리셋하는데 다른 무엇도 그렇다고 말해 주지 않는다 — `selftest`가 샘플 카운터의
+   역행(backwards jump)을 감시한다. 전원 공급 허브를 선호할 것.
+2. **접지 루프(Ground loop).** 이제 Pi가 모터 전류를 흘리는 프레임 주위에서 STM32,
+   Pixhawk와 접지를 공유한다. 노트북에서 기준선을 기록한 뒤 비교한다:
    ```bash
-   python -m tvcbench selftest --save-baseline laptop.json   # on the laptop
-   python -m tvcbench selftest --baseline laptop.json        # on the Pi
+   python -m tvcbench selftest --save-baseline laptop.json   # 노트북에서
+   python -m tvcbench selftest --baseline laptop.json        # Pi에서
    ```
-   A materially raised noise floor means a USB isolator is needed.
-3. **Device naming.** `ttyACM0` and `ttyACM1` can swap between boots.
-   `devices --probe` prints the udev rule that pins the board to
-   `/dev/tvc-loadcell`.
+   잡음 바닥(noise floor)이 실질적으로 올라갔다면 USB 아이솔레이터가 필요하다.
+3. **장치 이름 지정.** `ttyACM0`과 `ttyACM1`은 부팅 간에 뒤바뀔 수 있다.
+   `devices --probe`가 보드를 `/dev/tvc-loadcell`에 고정하는 udev 규칙을 출력한다.
 
-Connect the board to a **USB-A port** with an A-to-C cable — the Pi 5's USB-C is
-the power input, and the Pi must be the host.
+보드를 A-to-C 케이블로 **USB-A 포트**에 연결할 것 — Pi 5의 USB-C는 전원 입력이며,
+Pi가 호스트여야 한다.
 
-## Output
+## 출력
 
 ```
 bench/<run_id>/
-  manifest.json   plan (verbatim + resolved), seed, clock anchors and fits,
-                  tare offsets, achieved vs requested rates, outcome, warnings
-  sequence.csv    one row per segment: planned command, actual start/end,
-                  measured thrust mean and SEM
-  events.jsonl    every transition, tare, warning and abort
-  loadcell.csv    t_mono, dev_t, seg_id, Fx..Tz raw *and* tared
+  manifest.json   계획(원본 + 해석됨), 시드, 클록 앵커와 피팅,
+                  tare 오프셋, 실행 후 영점, 요청 대비 달성 속도, 결과, 경고
+  sequence.csv    세그먼트당 한 행: 계획된 지령, 실제 시작/종료,
+                  측정된 추력 평균과 SEM
+  events.jsonl    모든 전이, tare, 경고, 중단
+  loadcell.csv    t_mono, dev_t, seg_id, Fx..Tz 원시값 *및* tare된 값
   fc_servo.csv    t_mono, dev_t, seg_id, servo1..8
   fc_battery.csv  t_mono, seg_id, voltage, current
-  fc_esc.csv      t_mono, dev_t, seg_id, rpm/voltage/current (empty without ESC telemetry)
+  fc_esc.csv      t_mono, dev_t, seg_id, rpm/voltage/current (ESC 텔레메트리 없으면 비어 있음)
 ```
 
-`bench/` is separate from `runs/`, which holds the previous pipeline's derived
-output. The formats are unrelated and mixing them would only confuse.
+`bench/`는 이전 파이프라인의 파생 출력을 담는 `runs/`와 분리되어 있다. 포맷이
+서로 무관하며 섞으면 혼란만 줄 것이다.
 
-### Clocks
+### 클록
 
-Data files carry **raw** clock values and no derived epoch column, so they stay
-append-only: a run killed mid-way is still valid up to the point it stopped. The
-interpretation lives in `manifest.json`.
+데이터 파일은 **원시** 클록 값을 담고 파생된 epoch 열이 없으므로, 추가 전용
+(append-only)으로 유지된다: 도중에 죽은 실행도 멈춘 지점까지는 여전히 유효하다.
+해석은 `manifest.json`에 들어 있다.
 
-Every sample has `t_mono` from `time.monotonic()`. Epoch is derived from anchor
-pairs captured at the start and end, so an NTP step mid-run moves the anchors
-rather than part of the data.
+모든 샘플은 `time.monotonic()`에서 온 `t_mono`를 가진다. Epoch은 시작과 끝에
+포착된 앵커 쌍에서 파생되므로, 실행 도중의 NTP 스텝은 데이터의 일부가 아니라
+앵커를 움직인다.
 
-`dev_t` is the device's own counter — `t_ms` on the STM32, `time_usec` on the
-Pixhawk. Arrival timestamps alone are not good enough: USB CDC hands over 8–10
-samples in one read, so a burst all share an arrival time. Since transport
-latency is strictly one-sided (a sample can arrive late, never early), the true
-relation lies along the **lower edge** of the point cloud, and
-`clock.fit_device_clock` fits that edge rather than running least squares through
-the middle of it.
+`dev_t`는 장치 자체의 카운터이다 — STM32에서는 `t_ms`, Pixhawk에서는 `time_usec`.
+도착 타임스탬프만으로는 충분하지 않다: USB CDC가 한 번의 읽기에서 8–10개 샘플을
+넘겨주므로, 한 버스트가 모두 같은 도착 시간을 공유한다. 전송 지연은 엄격히
+한쪽 방향이므로(샘플은 늦게 도착할 수는 있어도 결코 일찍 오지 않는다), 참된 관계는
+점 구름의 **아래쪽 가장자리**를 따라 놓이며, `clock.fit_device_clock`은 그 가운데를
+관통하는 최소제곱이 아니라 그 가장자리를 피팅한다.
 
-Measured on a simulated 50 Hz link with 9-sample batches and 2 % stalls: raw
-arrival stamps are late by a median 82 ms with a 161 ms spread; after fitting,
-the spread is 0.03 ms. A constant transport delay (~1.5 ms) survives as a fixed
-offset, since no fit can tell a steady delay from a clock offset — harmless, as
-it shifts every force sample equally.
+시뮬레이션된 50 Hz 링크에서 9-샘플 배치와 2% 스톨로 측정: 원시 도착 스탬프는
+중앙값 82 ms 늦고 퍼짐이 161 ms이다; 피팅 후 퍼짐은 0.03 ms이다. 일정한 전송
+지연(~1.5 ms)은 고정 오프셋으로 살아남는다. 어떤 피팅도 일정한 지연을 클록
+오프셋과 구별할 수 없기 때문이다 — 모든 힘 샘플을 동일하게 이동시키므로 무해하다.
 
-### Tare
+### Tare(영점)
 
-Non-destructive. `gui.py` subtracted its zero before writing and kept no record,
-so a mis-tared run was unrecoverable. Here `Fz_raw` and `Fz` are both written and
-the offsets go in the manifest.
+비파괴적. `gui.py`는 쓰기 전에 영점을 빼고 기록을 남기지 않았으므로, 잘못
+tare된 실행은 복구 불가였다. 여기서는 `Fz_raw`와 `Fz`가 모두 쓰이고 오프셋은
+매니페스트에 들어간다.
 
-## Plans
+### 정지 후 기록(Post-stop)
 
-See [`plans/coax_grid.yaml`](../plans/coax_grid.yaml). Two choices are worth
-understanding.
+모터가 정지된 **뒤에도** `post_stop.seconds` 동안 기록이 계속된다(기본 10초).
+액추에이터 테스트 지령은 이미 보내기를 멈췄고 마지막 지령도 1초 뒤 만료되므로,
+이 구간에서는 출력을 지령하는 것이 아무것도 없다. 러너는 여기서 액추에이터를
+째깍이지 않는다 — 지령이 만료되도록 두는 것이 바로 목적이다. 이 구간은
+`sequence.csv`에 `post_stop` 종류의 마지막 세그먼트로 들어가고, 모든 스트림이
+그 `seg_id`를 달고 계속 기록된다. 중단(abort)된 실행에서도 실행된다 — 그때야말로
+직후의 벤치 상태가 가장 값진 순간이며, 관성 정지(coast-down)가 그대로 남는다.
 
-**Ordering.** The pack drains monotonically, so a grid walked in order makes
-every high-B point a low-voltage point and the two can never be separated.
-`blocked_random` gives each repeat its own shuffled complete pass over the grid —
-a randomised complete block design — so every command level sees the same
-expected position in the drain. Adjacent jumps are left unconstrained: settling
-is what dwell is for.
+두 가지를 얻는다.
 
-**Dwell.** Three modes:
+**실행 종료 시점의 로드셀 영점.** tare는 실행 시작에 한 번만 측정되고 모든
+계단이 그것을 기준으로 보고된다. 그 사이 영점이 움직였다면 맵 전체가 그만큼
+치우치는데, 지금까지는 그것을 알 방법이 없었다. 같은 양을 끝에서 다시 재면
+그 미지수가 매니페스트의 숫자(`post_stop.zero_thrust_n`)가 된다. 구간의 앞
+절반은 버린다 — 중단 직후라면 그 앞부분은 영점이 아니라 관성 정지이다.
+`|영점| > 0.25 N`이면 경고가 남는다: 12 N 작동 추력 대비 2 %로, 예산의 다른
+어떤 항목보다 크다.
 
-| Mode | Behaviour |
+**팩의 회복 전압.** 부하 중의 단자 전압은 IR 강하를 포함한다. 부하가 사라지면
+개방 회로 값으로 이완되며, 그것이 다음 실행의 예산을 세울 충전 상태이다.
+`idle_post`가 최소 지령으로 재는 값보다 한 단계 더 무부하에 가깝다.
+
+`post_stop.seconds: 0`이면 비활성화된다.
+
+## 계획(Plans)
+
+[`plans/coax_grid.yaml`](../plans/coax_grid.yaml)을 참고할 것. 이해할 가치가 있는
+두 가지 선택이 있다.
+
+**순서(Ordering).** 팩은 단조롭게 방전되므로, 순서대로 걸어간 격자는 모든 고-B
+지점을 저전압 지점으로 만들고 그 둘은 결코 분리될 수 없다. `blocked_random`은
+각 반복에 자체적으로 섞인 격자 전체 통과를 부여한다 — 무작위화된 완전 블록
+설계(randomised complete block design) — 그래서 모든 지령 레벨이 방전에서 같은
+기대 위치를 본다. 인접한 점프는 제약 없이 남겨 둔다: 안정화는 dwell이 담당한다.
+
+**Dwell(체류).** 세 가지 모드:
+
+| 모드 | 거동 |
 |---|---|
-| `fixed` | Hold for a set time. Start here — the run's timing cannot depend on the sensor. |
-| `settle` | Hold until thrust stops moving, then hold a fixed span of settled signal. |
-| `sem_target` | Hold until the thrust standard error reaches a target. |
+| `fixed` | 설정된 시간 동안 유지. 여기서 시작할 것 — 실행의 타이밍이 센서에 의존해서는 안 된다. |
+| `settle` | 추력이 움직임을 멈출 때까지 유지한 뒤, 안정된 신호를 고정된 구간만큼 유지. |
+| `sem_target` | 추력 표준오차가 목표에 도달할 때까지 유지. |
 
-`sem_target` is the interesting one: it makes the error bar **uniform across the
-map** instead of letting it vary with local noise. The uncertainty is corrected
-for autocorrelation using the same estimator the analysis uses
-(`tvctools.analyze.integrated_autocorr_time`) — propeller vibration has lag-1
-autocorrelation near 0.5, so a naive `sd/√n` would stop every step about four
-times too early.
+`sem_target`이 흥미로운 것이다: 이는 오차 막대가 국소 잡음에 따라 변하도록 두는
+대신 **맵 전반에 걸쳐 균일**하게 만든다. 불확실성은 분석이 사용하는 것과 같은
+추정기(`tvctools.analyze.integrated_autocorr_time`)로 자기상관에 대해 보정된다 —
+프로펠러 진동은 0.5에 가까운 지연-1 자기상관을 가지므로, 순진한 `sd/√n`은 모든
+계단을 약 네 배 너무 일찍 멈출 것이다.
 
-Move to an adaptive mode only once fixed-dwell runs are trusted; `max_s` is then
-the only bound on a step that never settles.
+고정 dwell 실행이 신뢰된 뒤에야 적응형 모드로 이동할 것; 그러면 `max_s`가 결코
+안정되지 않는 계단에 대한 유일한 한계이다.
 
-**Reference revisits** return to a fixed point every N steps, so drift can be
-fitted as a covariate rather than merely bracketed at the ends.
+**참조 재방문(Reference revisits)**은 N계단마다 고정된 지점으로 돌아가므로,
+드리프트를 단지 양끝에서 괄호로 묶는 대신 공변량(covariate)으로 피팅할 수 있다.
 
-## Safety
+## 안전
 
-The base layer is not in any of this code: `MAV_CMD_ACTUATOR_TEST` expires after
-`timeout_s`, so **ceasing to send is itself the stop** — a crashed process, a
-severed cable and a killed thread all stop the motors by doing nothing. The
-runner is the only thing that ticks the actuator.
+기반 계층은 이 코드 어디에도 없다: `MAV_CMD_ACTUATOR_TEST`는 `timeout_s` 후에
+만료되므로, **보내기를 멈추는 것 자체가 정지**이다 — 죽은 프로세스, 끊어진 케이블,
+종료된 스레드 모두 아무것도 안 함으로써 모터를 멈춘다. 러너가 액추에이터를
+째깍이는(tick) 유일한 것이다.
 
-Above that, `supervisor.py` is the sole abort authority — not the user interface.
-The old watchdog fired when the browser stopped polling, which is meaningless
-headless. Limits: minimum voltage, maximum current, **maximum thrust and
-torque** (new, and only possible now the Pi can see force — catches a shed blade
-or a slipped mount), load-cell dropout, FC heartbeat loss, plus SIGINT/SIGTERM
-and a `--stop-file`.
+그 위에서, `supervisor.py`가 유일한 중단 권한이다 — 사용자 인터페이스가 아니다.
+기존 워치독은 브라우저가 폴링을 멈추면 발동했는데, 이는 헤드리스에서 무의미하다.
+한계: 최소 전압, 최대 전류, **최대 추력과 토크**(새로 추가; 이제 Pi가 힘을 볼 수
+있어야 가능하다 — 떨어져 나간 블레이드나 미끄러진 마운트를 잡아낸다), 로드셀
+드롭아웃, FC 하트비트 손실, 그리고 SIGINT/SIGTERM과 `--stop-file`.
 
-Every abort path still stops the motors, closes the files and writes a manifest.
-A run that ends badly is still a readable run.
+모든 중단 경로는 여전히 모터를 멈추고, 파일을 닫고, 매니페스트를 쓴다. 나쁘게
+끝난 실행도 여전히 읽을 수 있는 실행이다.
 
-`--no-motor` executes the whole sequence, timing and recording path with every
-command suppressed — a full rehearsal with the battery disconnected.
+`--no-motor`는 모든 지령을 억제한 채 전체 시퀀스, 타이밍, 기록 경로를 실행한다 —
+배터리를 분리한 완전한 리허설이다.
 
-## Retiring the `.ulg`
+## `.ulg` 은퇴시키기
 
-Everything the ulog supplies is now recorded by the Pi, including the no-load
-voltage that the `idle_pre`/`idle_post` segments measure directly. Two honest
-caveats: `SERVO_OUTPUT_RAW` achieves ~18–20 Hz against a requested 50 (it is a
-verification echo of a command already known, so this is ample), and
-`BATTERY_STATUS` at 10–20 Hz is the real resolution limit for power integration.
+ulog가 공급하던 모든 것이 이제 Pi에 의해 기록된다. `idle_pre`/`idle_post`
+세그먼트가 직접 측정하는 무부하 전압도 포함된다. 두 가지 정직한 유의점:
+`SERVO_OUTPUT_RAW`는 요청된 50 대비 ~18–20 Hz를 달성하며(이미 알려진 지령의 검증
+에코이므로 이는 충분하다), `BATTERY_STATUS`는 10–20 Hz로 전력 적분의 실제 해상도
+한계이다.
 
-Keep the ulog for a handful of sessions and check it against the Pi over the
-**sync chirps** — a short square wave at each end of every run, retained purely
-as a high-SNR feature for that comparison. Drop the ulog once they agree.
+몇 세션 동안 ulog를 유지하고 **동기 처프(sync chirps)** — 모든 실행의 양끝에 놓인
+짧은 사각파로, 오로지 그 비교를 위한 고-SNR 특징으로 유지된다 — 를 통해 Pi와 대조할
+것. 이들이 일치하면 ulog를 버릴 것.
 
-## Testing
+## 테스트
 
 ```bash
 python -m pytest tests/ -q
 ```
 
-The simulated sources exercise the runner, recorder, supervisor and dwell logic
-with nothing plugged in, including every abort path. `sources/sim.py` output is
-**not data** — but its power law (`P = 5.1·T^1.5`) and its autocorrelated noise
-are taken from the real measurements, so the sag and dwell paths are rehearsed
-against something close to this bench.
+시뮬레이션된 소스가 아무것도 꽂지 않은 채로 러너, 레코더, 슈퍼바이저, dwell 로직을
+모든 중단 경로를 포함하여 훈련시킨다. `sources/sim.py`의 출력은 **데이터가 아니다**
+— 하지만 그 거듭제곱 법칙(`P = 5.1·T^1.5`)과 자기상관된 잡음은 실제 측정에서
+취한 것이므로, 새그와 dwell 경로는 이 벤치에 가까운 무언가에 대해 리허설된다.

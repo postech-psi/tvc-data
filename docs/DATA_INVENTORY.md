@@ -1,70 +1,69 @@
-# Data inventory and voltage status
+# 데이터 인벤토리 및 전압 상태
 
-Generated from `runs/` by `python -m tvctools build` + `map`. Times are
-bench-local (KST). Regenerate after adding new runs.
+`python -m tvctools build` + `map`으로 `runs/`에서 생성됨. 시간은 벤치 로컬(KST)이다.
+새 실행을 추가한 뒤에는 다시 생성할 것.
 
-## Alignment: the three links
+## 정렬: 세 개의 연결 고리
 
-Nothing shares a clock, so three separate links are chained. Each is verified,
-and the verification numbers are stored in `run.json` / `session.json`.
+어떤 것도 클록을 공유하지 않으므로, 세 개의 별도 연결 고리가 사슬로 이어진다.
+각각이 검증되며, 검증 수치는 `run.json` / `session.json`에 저장된다.
 
 ```
- load cell (STM32 uptime)          Pi (UTC epoch)            Pixhawk (boot us)
+ 로드셀 (STM32 가동 시간)          Pi (UTC epoch)            Pixhawk (부팅 us)
         │                                │                          │
-        │  LINK 1                        │  LINK 2                  │  LINK 3
-        │  filename (KST) + elapsed t_ms │  t_epoch & t_fc_us in    │  same boot
-        │  then xcorr thrust vs current  │  the SAME thrust_map row  │  clock
+        │  링크 1                        │  링크 2                  │  링크 3
+        │  파일명(KST) + 경과 t_ms        │  같은 thrust_map 행의     │  같은 부팅
+        │  그다음 xcorr 추력 vs 전류      │  t_epoch & t_fc_us        │  클록
         └───────────────►────────────────┴────────────►─────────────┘
 ```
 
-**Link 1 — load cell → wall clock.** The stand logs only free-running MCU
-uptime. Its filename gives the local start time, so
-`epoch ≈ filename_epoch + (t_ms − t_ms[0])/1000`, good to about a second. That
-is refined by cross-correlating thrust (`−Fz`) against the Pixhawk's `current_a`
-— the only observable both systems see, since the stand's own pwm/rpm/current
-columns are dead. One lag is fitted **per load-cell file** (the offset belongs to
-the recording, not the sweep), taken from the longest overlapping sweep.
-*Result: lags −0.85 s … +0.95 s, correlations 0.37–0.66.*
+**링크 1 — 로드셀 → 벽시계.** 스탠드는 자유 진행 MCU 가동 시간만 기록한다.
+파일명이 로컬 시작 시간을 주므로 `epoch ≈ filename_epoch + (t_ms − t_ms[0])/1000`,
+약 1초 정밀도이다. 이것은 추력(`−Fz`)을 Pixhawk의 `current_a`와 상호상관시켜
+정밀화한다 — 두 시스템이 함께 보는 유일한 관측량이다. 스탠드 자체의 pwm/rpm/current
+열은 죽어 있기 때문이다. 지연 하나는 **로드셀 파일별로** 피팅되며(오프셋은 스윕이
+아니라 녹음에 속한다), 가장 긴 겹치는 스윕에서 취한다.
+*결과: 지연 −0.85초 … +0.95초, 상관 0.37–0.66.*
 
-**Link 2 — wall clock → FC clock.** Every `thrust_map` row carries `t_epoch`
-(Pi wall clock) **and** `t_fc_us` (Pixhawk boot clock). Their median difference
-is the boot-to-epoch offset. This is the only bridge to the flight controller's
-time base. *Result: independent sweeps in one log agree to 0.000–0.030 s.*
+**링크 2 — 벽시계 → FC 클록.** 모든 `thrust_map` 행은 `t_epoch`(Pi 벽시계)
+**와** `t_fc_us`(Pixhawk 부팅 클록)를 담는다. 이들의 중앙값 차이가 부팅-대-epoch
+오프셋이다. 이것은 비행 컨트롤러 시간 기준으로 가는 유일한 다리이다.
+*결과: 한 로그 내의 독립 스윕들이 0.000–0.030초까지 일치.*
 
-**Link 3 — FC clock → ulog.** The ulog uses that same boot clock, so link 2
-dates it. Because the clock restarts near zero every boot, containment alone is
-not proof; the match is confirmed by correlating the ulog's `actuator_outputs`
-against the thrust_map's `servo*_raw` (≥ 0.9). Constant holds have no shape to
-correlate and are located by epoch containment once a sweep has fixed the offset.
+**링크 3 — FC 클록 → ulog.** ulog는 그 같은 부팅 클록을 사용하므로, 링크 2가
+날짜를 매긴다. 클록이 매 부팅마다 0 근처에서 재시작하므로 포함(containment)만으로는
+증거가 되지 않는다; 그 일치는 ulog의 `actuator_outputs`를 thrust_map의
+`servo*_raw`와 상관시켜(≥ 0.9) 확인된다. 정상 홀드는 상관시킬 형상이 없어 스윕이
+오프셋을 고정한 뒤 epoch 포함으로 위치를 찾는다.
 
-Accuracy overall is limited by link 1, i.e. **roughly ±0.1 s** — far finer than
-the 2.4 s command steps, so step attribution is unambiguous.
+전체 정확도는 링크 1에 의해 제한된다. 즉 **대략 ±0.1초** — 2.4초 지령 계단보다
+훨씬 미세하므로 계단 귀속(step attribution)은 모호하지 않다.
 
-## What exists, by date and time
+## 무엇이 존재하는가, 날짜와 시간별
 
-`pwm` = commanded PWM + voltage/current. `thr` = thrust + torque.
+`pwm` = 지령 PWM + 전압/전류. `thr` = 추력 + 토크.
 
-### 2026-07-20 — load cell only, before the Pi drove the motor
+### 2026-07-20 — 로드셀만, Pi가 모터를 구동하기 전
 
-| Time | Run | Dur | pwm | thr | Voltage | Note |
+| 시간 | 실행 | 지속 | pwm | thr | 전압 | 비고 |
 |---|---|---|---|---|---|---|
-| 16:47:17 | `r01_164717` | 37.5 s | ✗ | ✓ | — | no Pixhawk data |
-| 18:34:15 | `r01_183415` | 49.3 s | ✗ | ✓ | — | no Pixhawk data |
-| 18:37:44 | `r02_183744` | 66.2 s | ✗ | ✓ | — | **only file with a real `pwm` column sweep** |
+| 16:47:17 | `r01_164717` | 37.5 s | ✗ | ✓ | — | Pixhawk 데이터 없음 |
+| 18:34:15 | `r01_183415` | 49.3 s | ✗ | ✓ | — | Pixhawk 데이터 없음 |
+| 18:37:44 | `r02_183744` | 66.2 s | ✗ | ✓ | — | **실제 `pwm` 열 스윕이 있는 유일한 파일** |
 
-Unusable for mapping — no voltage record at all.
+매핑에는 사용 불가 — 전압 기록이 전혀 없음.
 
-### 2026-07-23 — Pixhawk only
+### 2026-07-23 — Pixhawk만
 
-| Time | Run | Dur | pwm | thr | Voltage |
+| 시간 | 실행 | 지속 | pwm | thr | 전압 |
 |---|---|---|---|---|---|
 | 18:33:06 | `r01_183306` (`1000_F.csv`) | 88.0 s | ✓ | ✗ | — |
 
-No thrust. Usable only as a PWM/voltage reference.
+추력 없음. PWM/전압 참조로만 사용 가능.
 
-### 2026-07-24 session 1 (00:05–01:16) — the PWM sweeps
+### 2026-07-24 세션 1 (00:05–01:16) — PWM 스윕
 
-| Time | Run | Dur | pwm | thr | V high → low | Sag | ulog |
+| 시간 | 실행 | 지속 | pwm | thr | V 높음 → 낮음 | 새그(Sag) | ulog |
 |---|---|---|---|---|---|---|---|
 | 00:05:35 | `r01_000535_1200f` | 91.2 s | ✓ | ✗ | — | — | — |
 | 00:23:15 | `r02_002315` | 160.5 s | ✓ | ✓ | 11.95 → 11.12 | **0.83 V** | log_3_..00-27-40 |
@@ -73,14 +72,14 @@ No thrust. Usable only as a PWM/voltage reference.
 | 01:04:14 | `r05_010414_1400` | 210.3 s | ✓ | ✓ | 11.27 → 10.72 | **0.55 V** | log_1_..01-16-18 |
 | 01:13:50 | `r06_011350_1500_3s` | 142.6 s | ✓ | ✓ | 11.13 → 10.58 | **0.55 V** | log_1_..01-16-18 |
 
-`r02` and `r03` share one continuous load-cell recording.
+`r02`와 `r03`은 하나의 연속된 로드셀 녹음을 공유한다.
 
-### 2026-07-24 session 2 (16:20–17:10) — the voltage-sag test
+### 2026-07-24 세션 2 (16:20–17:10) — 전압 새그 테스트
 
-Each run is a single constant command held ~60 s, so voltage is **flat within a
-run** and steps down between runs as the pack drains.
+각 실행은 하나의 정상 지령을 ~60초 유지하므로, 전압은 **실행 내에서는 평평**하고
+팩이 방전됨에 따라 실행 사이에서 단계적으로 내려간다.
 
-| Time | Run | Command | Dur | thr | Voltage |
+| 시간 | 실행 | 지령 | 지속 | thr | 전압 |
 |---|---|---|---|---|---|
 | 16:20:57 | `r01_162057` | A1700_B1700 | 52.4 s | ✓ | 11.95 |
 | 16:25:19 | `r02_162519` | A1800_B1800 | 27.8 s | ✓ | 11.67 |
@@ -88,46 +87,45 @@ run** and steps down between runs as the pack drains.
 | 16:38:08 | `r04_163808` | A1850_B1850 | 80.8 s | ✓ | 11.12 |
 | 16:41:54 | `r05_164154` | A1850_B1850 | 87.2 s | ✓ | 10.96 |
 | 16:44:32 | `r06_164432` | A1850_B1850 | 80.7 s | ✓ | 10.84 |
-| 16:47:30 | `r07_164730` | A1850_B1850 | 60.0 s | ✗ | — (no thrust) |
+| 16:47:30 | `r07_164730` | A1850_B1850 | 60.0 s | ✗ | — (추력 없음) |
 | 16:57:36 | `r08_165736` | A1850_B1850 | 78.1 s | ✓ | 10.63 |
 | 17:01:59 | `r09_170159` | A1850_B1850 | 76.3 s | ✓ | 10.57 |
 | 17:09:43 | `r10_170943` | A1850_B1850 | 82.2 s | ✓ | 10.46 |
 
-All ten sit inside one log, `log_3_2026-7-24-17-11-46.ulg` (16:17:56–17:11:50).
+열 개 모두 하나의 로그 `log_3_2026-7-24-17-11-46.ulg`(16:17:56–17:11:50) 안에 있다.
 
-## Voltage: state of charge vs transient sag
+## 전압: 충전 상태(state of charge) vs 과도 새그(transient sag)
 
-**These are two different things and must not be mixed.**
+**이 둘은 서로 다른 것이며 섞어서는 안 된다.**
 
-- **No-load voltage** — the pack with the motor off. This is the state of
-  charge, and the only number that compares runs meaningfully.
-- **Loaded voltage** — no-load minus an `I*R` drop under 20-25 A. The drop is
-  *not* constant: measured across session 2 it ranged **0.66 V to 1.18 V**,
-  because it scales with whatever throttle was applied.
+- **무부하 전압** — 모터를 끈 팩. 이것이 충전 상태이며, 실행을 의미 있게
+  비교할 수 있는 유일한 수치이다.
+- **부하 전압** — 무부하 전압에서 20–25 A 하에서의 `I*R` 강하를 뺀 것. 그 강하는
+  일정하지 *않다*: 세션 2 전반에 걸쳐 측정했을 때 **0.66 V에서 1.18 V**까지
+  범위였다. 적용된 스로틀에 따라 비례하기 때문이다.
 
-Measured on session 2 (`log_3_2026-7-24-17-11-46.ulg`, 54 min):
+세션 2에서 측정 (`log_3_2026-7-24-17-11-46.ulg`, 54분):
 
 | | |
 |---|---|
-| No-load voltage, start → end | **12.61 → 11.06 V** |
-| Genuine pack depletion | **1.55 V** |
-| Mean IR sag while running | 1.04 V |
-| Loaded voltage range (all runs) | 10.29 – 12.58 V |
+| 무부하 전압, 시작 → 끝 | **12.61 → 11.06 V** |
+| 실제 팩 소진 | **1.55 V** |
+| 구동 중 평균 IR 새그 | 1.04 V |
+| 부하 전압 범위 (모든 실행) | 10.29 – 12.58 V |
 
-So the loaded-voltage spread is dominated by transient sag, not depletion.
+따라서 부하 전압의 퍼짐은 소진이 아니라 과도 새그가 지배한다.
 
-No-load voltage is read from the ulog — the only source covering the idle
-stretches between runs — as the median of battery samples with current < 1 A and
-throttle at idle, in the 40 s before each run. It is stored per run as
-`voltage_noload_v` in `run.json`.
+무부하 전압은 ulog에서 읽는다 — 실행 사이의 유휴 구간을 포함하는 유일한 출처이며 —
+각 실행 전 40초 이내에서 전류 < 1 A이고 스로틀이 유휴인 배터리 샘플의 중앙값으로
+구한다. 실행별로 `run.json`에 `voltage_noload_v`로 저장된다.
 
-### Per-run state of charge
+### 실행별 충전 상태
 
-| Session | Run | Time | **V no-load** | V loaded | IR sag |
+| 세션 | 실행 | 시간 | **V 무부하** | V 부하 | IR 새그 |
 |---|---|---|---|---|---|
 | s1 | `r02_002315` | 00:23 | **12.02** | 11.95 | 0.07 |
 | s1 | `r03_002413` | 00:24 | **11.90** | 11.65 | 0.25 |
-| s1 | `r04_005108_1300` | 00:51 | *no ulog* | 11.38 | — |
+| s1 | `r04_005108_1300` | 00:51 | *ulog 없음* | 11.38 | — |
 | s1 | `r05_010414_1400` | 01:04 | **11.60** | 11.23 | 0.38 |
 | s1 | `r06_011350_1500_3s` | 01:14 | **11.44** | 11.10 | 0.34 |
 | s2 | `r01_162057` | 16:21 | **12.62** | 11.95 | 0.67 |
@@ -141,86 +139,81 @@ throttle at idle, in the 40 s before each run. It is stored per run as
 | s2 | `r09_170159` | 17:02 | **11.30** | 10.57 | 0.74 |
 | s2 | `r10_170943` | 17:10 | **11.25** | 10.46 | 0.78 |
 
-`r04_005108_1300` has no ulog covering it, so its state of charge is unknown —
-it can only be placed by interpolation between `r03` (11.90 V) and `r05`
-(11.60 V).
+`r04_005108_1300`은 이를 포함하는 ulog가 없어 충전 상태를 알 수 없다 —
+`r03`(11.90 V)과 `r05`(11.60 V) 사이의 보간으로만 배치할 수 있다.
 
-### The sag result, on the correct axis
+### 새그 결과, 올바른 축 위에서
 
-Against **no-load** voltage the fit is tighter than against loaded voltage
-(r = 0.980 vs 0.971), which is what you would expect from removing a confound:
+**무부하** 전압에 대한 피팅이 부하 전압에 대한 것보다 더 조밀하며
+(r = 0.980 vs 0.971), 이는 교란 요인을 제거했을 때 예상되는 결과이다:
 
 ```
-A1850_B1850, 7 runs:  11.25 - 12.50 V no-load  ->  12.65 - 14.64 N
+A1850_B1850, 7개 실행:  11.25 - 12.50 V 무부하  ->  12.65 - 14.64 N
 dThrust/dV = 1.435 N/V     thrust ~ V^1.24     r = 0.980
-13.6 % of thrust lost across the discharge
+방전 전반에 걸쳐 추력의 13.6% 손실
 ```
 
-## Why no existing run gives a clean thrust map
+## 왜 기존 실행 중 어느 것도 깨끗한 추력 맵을 주지 못하는가
 
-The two sessions fail in opposite ways:
+두 세션은 정반대 방식으로 실패한다:
 
-- **Session 1** sweeps all of B inside one run, but the pack sags *while the
-  sweep climbs*, so low-throttle points sit at high voltage and high-throttle
-  points at low voltage. The curve lies along a voltage gradient rather than at
-  one operating point.
-- **Session 2** holds a steady state of charge within each run, but each run is
-  a single (A, B) point at a different charge level — ideal for calibrating the
-  sag, useless as a map on its own.
+- **세션 1**은 한 실행 안에서 B 전체를 스윕하지만, *스윕이 상승하는 동안* 팩이
+  새그되므로, 낮은 스로틀 지점은 높은 전압에, 높은 스로틀 지점은 낮은 전압에
+  놓인다. 곡선이 하나의 동작점이 아니라 전압 기울기를 따라 놓인다.
+- **세션 2**는 각 실행 내에서 안정된 충전 상태를 유지하지만, 각 실행이 서로 다른
+  충전 수준의 단일 (A, B) 지점이다 — 새그 보정에는 이상적이나, 그 자체로는 맵으로
+  쓸모없다.
 
-Session 2 calibrates the exponent; session 1 supplies the shape. Combine with:
+세션 2가 지수를 보정하고; 세션 1이 형상을 공급한다. 다음으로 결합한다:
 
 ```bash
 python -m tvctools map --normalize --v-ref 11.5
 ```
 
-`thrust_N` becomes the corrected value, `thrust_N_raw` keeps the original, and
-`v_correction` records the factor. This is a first-order correction, **not** a
-substitute for testing at constant voltage: it assumes one exponent everywhere
-and cannot undo thermal drift.
+`thrust_N`은 보정된 값이 되고, `thrust_N_raw`는 원본을 유지하며, `v_correction`은
+그 계수를 기록한다. 이것은 1차 보정이며, 일정 전압에서의 테스트를 **대체하지
+못한다**: 어디서나 하나의 지수를 가정하며 열적 드리프트를 되돌릴 수 없다.
 
-## Protocol for the next thrust tests (no bench PSU)
+## 다음 추력 테스트를 위한 프로토콜 (벤치 PSU 없음)
 
-Without a PSU the pack will drain, so the goal shifts from *preventing* drift to
-*measuring* it and *decorrelating* it from PWM. All four options below are now
-implemented in `pwm_thrust_map.py` and exposed in the web GUI.
+PSU가 없으면 팩이 방전되므로, 목표는 드리프트를 *막는* 것에서 그것을 *측정*하고
+PWM으로부터 *탈상관(decorrelate)*하는 것으로 바뀐다. 아래 네 가지 옵션은 모두 이제
+`pwm_thrust_map.py`에 구현되어 웹 GUI에 노출되어 있다.
 
-1. **`무부하 기록(s)` = 10 s** (`idle_s`). Records `idle_pre` and `idle_post`
-   rows with **both rotors at 1000 µs**, so the pack is genuinely unloaded. The
-   voltage there is the state of charge, and `idle_pre − idle_post` is what that
-   run actually consumed. This also removes the need for a ulog to get SoC.
-2. **`계단 순서 섞기`** (`randomize`). Drift then adds scatter instead of a
-   systematic slope, because voltage decay is no longer aligned with rising PWM.
-   Set `seed` to a fixed number for a reproducible order.
-3. **`첫 조합을 끝에 반복`** (`bracket`). The opening and closing measurement of
-   the same command differ by exactly the drift accumulated during the sweep —
-   a direct measurement rather than a model.
-4. **Hold the state of charge in a band.** Compare runs only when their
-   `idle_pre` voltages are close; recharge between sweeps rather than chaining
-   them. This is the substitute for a constant-voltage supply.
+1. **`무부하 기록(s)` = 10 s** (`idle_s`). **두 로터 모두 1000 µs**로 `idle_pre`와
+   `idle_post` 행을 기록하므로 팩이 진정 무부하 상태가 된다. 거기서의 전압이
+   충전 상태이며, `idle_pre − idle_post`가 그 실행이 실제로 소비한 양이다. 이는
+   또한 SoC를 얻기 위해 ulog가 필요할 이유를 없앤다.
+2. **`계단 순서 섞기`** (`randomize`). 그러면 전압 감쇠가 더 이상 상승하는 PWM과
+   정렬되지 않으므로, 드리프트가 계통적 기울기 대신 산포를 더한다.
+   재현 가능한 순서를 위해 `seed`를 고정 숫자로 설정한다.
+3. **`첫 조합을 끝에 반복`** (`bracket`). 같은 지령의 시작 측정과 종료 측정은 정확히
+   스윕 동안 누적된 드리프트만큼 차이가 난다 — 모델이 아니라 직접 측정이다.
+4. **충전 상태를 밴드 안에 유지한다.** `idle_pre` 전압이 서로 가까울 때만 실행을
+   비교하고; 스윕을 사슬처럼 잇는 대신 스윕 사이에 재충전한다. 이것이 일정 전압
+   공급의 대체 수단이다.
 
-Also: **4 s per step** (≈1.5 s settle + ≈2.5 s average), and **fill the
-off-diagonal (A, B) cells** — coverage is 36 of 72, with A = 1700/1800/1850
-existing only where A = B, so the coaxial torque map is incomplete exactly where
-the balance point is most interesting.
+또한: **계단당 4초** (≈1.5초 안정 + ≈2.5초 평균), 그리고 **비대각(off-diagonal)
+(A, B) 칸을 채울 것** — 커버리지는 72개 중 36개이며, A = 1700/1800/1850은 A = B인
+곳에만 존재하므로, 균형점이 가장 흥미로운 바로 그곳에서 동축 토크 맵이 불완전하다.
 
-Still unresolved: **no RPM sensor.** Without one, "voltage changes thrust" and
-"voltage changes RPM which changes thrust" cannot be separated.
+여전히 미해결: **RPM 센서 없음.** 없으면 "전압이 추력을 바꾼다"와 "전압이 RPM을
+바꾸고 그것이 추력을 바꾼다"를 분리할 수 없다.
 
-## After the change: one-step alignment
+## 변경 후: 단일 단계 정렬
 
-The three-link chain exists almost entirely to accommodate the ulog:
+세 개의 연결 고리 사슬은 거의 전적으로 ulog를 수용하기 위해 존재한다:
 
-| Link | Needed because | Still needed without the ulog? |
+| 링크 | 필요한 이유 | ulog 없이도 여전히 필요? |
 |---|---|---|
-| 1. load cell → wall clock | the stand logs only MCU uptime | **yes** — unavoidable |
-| 2. wall clock → FC clock | to date the ulog | no |
-| 3. FC clock → ulog | to date the ulog | no |
+| 1. 로드셀 → 벽시계 | 스탠드가 MCU 가동 시간만 기록 | **예** — 불가피 |
+| 2. 벽시계 → FC 클록 | ulog에 날짜를 매기려고 | 아니오 |
+| 3. FC 클록 → ulog | ulog에 날짜를 매기려고 | 아니오 |
 
-Drop the ulog and alignment collapses to link 1 alone: anchor on the load-cell
-filename, refine by cross-correlating thrust against the Pi's current. That is
-the only irreducible step, because the load-cell CSV carries no absolute time.
+ulog를 버리면 정렬은 링크 1 하나로 붕괴한다: 로드셀 파일명에 앵커를 잡고, 추력을
+Pi의 전류와 상호상관시켜 정밀화한다. 로드셀 CSV가 절대 시간을 담지 않으므로, 이것이
+유일하게 축약 불가능한 단계이다.
 
-The one thing the ulog uniquely supplied was voltage during the idle stretches
-between runs — and `idle_s` now puts that in the Pi's own log. `tvctools` reads
-the Pi's idle phases first and falls back to the ulog only for older runs.
+ulog가 유일하게 공급하던 한 가지는 실행 사이 유휴 구간 동안의 전압이었는데 —
+`idle_s`가 이제 그것을 Pi 자체의 로그에 넣는다. `tvctools`는 Pi의 유휴 위상을 먼저
+읽고, 더 오래된 실행에 대해서만 ulog로 대체한다.
