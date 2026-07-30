@@ -1,0 +1,70 @@
+{
+  "cfg": {
+    "a_start": 1850,
+    "a_end": 1850,
+    "a_step": 100,
+    "b_start": 1850,
+    "b_end": 1850,
+    "b_step": 100,
+    "repeats": 1,
+    "dwell_s": 60.0,
+    "resend_hz": 5.0,
+    "timeout_s": 1.0,
+    "warmup_s": 3.0,
+    "idle_pre_s": 10.0,
+    "idle_post_s": 60.0,
+    "servo_hz": 50,
+    "bat_hz": 50,
+    "esc_hz": 50,
+    "min_voltage_v": 0.0,
+    "randomize": false,
+    "bracket": false,
+    "seed": 0,
+    "loadcell_device": "/dev/ttyACM0",
+    "loadcell_baud": 115200,
+    "tare_s": 10.0,
+    "ref_a": 1500,
+    "ref_b": 1500,
+    "ref_every_n_steps": 0,
+    "no_motor": false,
+    "out_dir": "raw/pwm",
+    "notes": "",
+    "prop": "",
+    "battery": ""
+  },
+  "t_start_epoch": 1785437589,
+  "grid": {
+    "a_values": [
+      1850
+    ],
+    "b_values": [
+      1850
+    ],
+    "n_grid_points": 1,
+    "repeats": 1,
+    "point_total": 1
+  },
+  "idle_pre_s": 10.0,
+  "idle_post_s": 60.0,
+  "outcome": "completed",
+  "achieved_rates_hz": {
+    "battery": 50.0,
+    "servo": 50.0,
+    "loadcell": 50.2
+  },
+  "tare_offsets": {
+    "Fx": -1.4593520000000018,
+    "Fy": -1.9578299999999988,
+    "Fz": -1.9646380000000019,
+    "Tx": 0.12565200000000007,
+    "Ty": -0.06118800000000003,
+    "Tz": -0.017211999999999977
+  },
+  "loadcell_stats": {
+    "received": 7212,
+    "parse_fail": 1,
+    "hz": 50.3,
+    "state": "ARMED",
+    "error": null
+  }
+}
