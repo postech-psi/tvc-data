@@ -1,0 +1,61 @@
+{
+  "cfg": {
+    "a_start": 1500,
+    "a_end": 1500,
+    "a_step": 100,
+    "b_start": 1000,
+    "b_end": 2000,
+    "b_step": 100,
+    "repeats": 1,
+    "dwell_s": 4.0,
+    "resend_hz": 5.0,
+    "timeout_s": 1.0,
+    "warmup_s": 3.0,
+    "idle_pre_s": 10.0,
+    "idle_post_s": 50.0,
+    "servo_hz": 50,
+    "bat_hz": 50,
+    "esc_hz": 50,
+    "min_voltage_v": 0.0,
+    "randomize": false,
+    "bracket": false,
+    "seed": 0,
+    "loadcell_device": "/dev/ttyACM0",
+    "loadcell_baud": 115200,
+    "tare_s": 10.0,
+    "ref_a": 1500,
+    "ref_b": 1500,
+    "ref_every_n_steps": 0,
+    "no_motor": true,
+    "out_dir": "raw/pwm",
+    "notes": "",
+    "prop": "",
+    "battery": ""
+  },
+  "t_start_epoch": 1785433356,
+  "grid": {
+    "a_values": [
+      1500
+    ],
+    "b_values": [
+      1000,
+      1100,
+      1200,
+      1300,
+      1400,
+      1500,
+      1600,
+      1700,
+      1800,
+      1900,
+      2000
+    ],
+    "n_grid_points": 11,
+    "repeats": 1,
+    "point_total": 11
+  },
+  "idle_pre_s": 10.0,
+  "idle_post_s": 50.0,
+  "outcome": "aborted",
+  "abort_reason": "stop-button"
+}

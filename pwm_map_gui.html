@@ -101,24 +101,50 @@
   </div>
 
   <div class="panel">
+    <h2>로드셀 (STM32, USB 시리얼)</h2>
+    <div class="row">
+      <div><label>device (비우면 로드셀 없이 진행)</label><input type="text" id="loadcell_device" value="/dev/ttyACM0"></div>
+      <div><label>baud</label><input type="number" id="loadcell_baud" value="115200"></div>
+      <div><label>tare(s) — 시작 전 0점 잡기</label><input type="number" id="tare_s" value="5" step="0.5"></div>
+    </div>
+    <div class="est">※ 로드셀은 ARM 하트비트(50Hz)를 계속 받아야 50Hz로 기록된다 — 이 서버가 자동으로 보낸다.
+      raw 값은 항상 그대로 유지되고, tare 오프셋은 run.json 에 저장된다.</div>
+  </div>
+
+  <div class="panel">
     <h2>스윕 / 타이밍</h2>
     <div class="row">
       <div><label>스윕 반복(N)</label><input type="number" id="repeats" value="1"></div>
-      <div><label>dwell(s) — 계단 한 칸 유지·기록</label><input type="number" id="dwell_s" value="2" step="0.5"></div>
-      <div><label>재전송(Hz)</label><input type="number" id="resend_hz" value="5" step="0.5"></div>
+      <div><label>dwell(s) — 계단 한 칸 유지·기록</label><input type="number" id="dwell_s" value="3" step="0.5"></div>
+      <div><label>재전송(Hz) — PWM 명령 유지용 반복 전송 주기</label><input type="number" id="resend_hz" value="5" step="0.5"></div>
     </div>
     <div class="row">
-      <div><label>timeout(s)</label><input type="number" id="timeout_s" value="1" step="0.1"></div>
+      <div><label>timeout(s) — 재전송 없으면 이 시간 뒤 값 소멸</label><input type="number" id="timeout_s" value="1" step="0.1"></div>
       <div><label>warmup(s)</label><input type="number" id="warmup_s" value="3" step="0.5"></div>
-      <div><label>저장 폴더(비우면 현재 폴더)</label><input type="text" id="out_dir" placeholder="raw/2026-07-25"></div>
+      <div><label>저장 폴더</label><input type="text" id="out_dir" value="raw/pwm" placeholder="raw/pwm"></div>
     </div>
     <!-- 측정 설계: 배터리 소모가 PWM과 겹쳐 생기는 교란을 줄이기 위한 옵션 -->
     <div class="row">
-      <div><label>무부하 기록(s) — 전/후 배터리 잔량</label><input type="number" id="idle_s" value="10" step="1"></div>
-      <div><label><input type="checkbox" id="randomize"> 계단 순서 섞기</label></div>
+      <div><label>무부하 기록(s) — 스윕 전</label><input type="number" id="idle_pre_s" value="5" step="1"></div>
+      <div><label>무부하 기록(s) — 스윕 후(전압 회복은 느림, 길게)</label><input type="number" id="idle_post_s" value="30" step="1"></div>
+      <div><label><input type="checkbox" id="randomize"> 계단 순서 섞기(반복마다 새로 셔플)</label></div>
+    </div>
+    <div class="row">
       <div><label><input type="checkbox" id="bracket"> 첫 조합을 끝에 반복(드리프트 측정)</label></div>
     </div>
-    <!-- 아래 메모는 측정에 영향 없음. CSV 옆 .run.json 에 같이 저장되어 나중에 런을 구분하는 데 쓰인다. -->
+    <!-- 기준점 재방문: 기본 꺼짐(every_n_steps=0) — 안 쓰면 예전과 완전히 동일하게 동작 -->
+    <div class="row">
+      <div><label>기준점 재방문 주기(스텝, 0=끔)</label><input type="number" id="ref_every_n_steps" value="0" step="1"></div>
+      <div><label>기준점 A(µs)</label><input type="number" id="ref_a" value="1500"></div>
+      <div><label>기준점 B(µs)</label><input type="number" id="ref_b" value="1500"></div>
+    </div>
+    <div class="est">※ 기준점(reference) = 스윕 중간에 주기적으로 되돌아가는 고정 PWM 지점.
+      N 스텝마다 한 번씩 이 지점을 다시 찍어 두면, 배터리 소모·발열 등으로 인한 드리프트를
+      "같은 지점인데 값이 달라진 정도"로 직접 측정할 수 있다(0=끔, 안 쓰면 예전과 동일).</div>
+    <div class="row">
+      <div><label><input type="checkbox" id="no_motor"> 모터 없이 테스트(dry-run) — 로깅/로드셀만 확인</label></div>
+    </div>
+    <!-- 아래 메모는 측정에 영향 없음. CSV 옆 run.json 에 같이 저장되어 나중에 런을 구분하는 데 쓰인다. -->
     <div class="row">
       <div><label>프로펠러</label><input type="text" id="prop" placeholder="예: 5045 3-blade"></div>
       <div><label>배터리</label><input type="text" id="battery" placeholder="예: 3S 2200mAh"></div>
@@ -152,6 +178,9 @@
       <div class="chip"><div class="t">현재 A / B</div><div class="v" id="kAB">– / –</div></div>
       <div class="chip"><div class="t">전압 (V)</div><div class="v" id="kVolt">–</div></div>
       <div class="chip"><div class="t">전류 (A)</div><div class="v" id="kCurr">–</div></div>
+      <div class="chip"><div class="t">추력 (N)</div><div class="v" id="kThrust">–</div></div>
+      <div class="chip"><div class="t">토크 (N·m)</div><div class="v" id="kTorque">–</div></div>
+      <div class="chip"><div class="t">로드셀 Hz</div><div class="v" id="kLoadcellHz">–</div></div>
       <div class="chip"><div class="t">경과 (s)</div><div class="v" id="kElapsed">0</div></div>
       <div class="chip"><div class="t">남은 시간(추정)</div><div class="v" id="kEta">–</div></div>
     </div>
@@ -168,19 +197,23 @@
 //  ※ 이 폴링이 곧 watchdog ping 이라, 브라우저를 닫으면 서버가 끊김을 감지해 모터를 자동 정지한다.
 // =====================================================================
 
-// 설정 입력칸(id 그대로 서버 키로 전송). 전부 숫자(+ device 문자열).
+// 설정 입력칸(id 그대로 서버 키로 전송). 전부 숫자(+ device/loadcell_device 문자열).
 const NUM_FIELDS = ["baud","a_start","a_end","a_step","b_start","b_end","b_step",
-                    "repeats","dwell_s","resend_hz","timeout_s","warmup_s","idle_s"];
-// 측정에는 영향 없고 .run.json 에 기록되는 항목들(저장 폴더 포함).
+                    "repeats","dwell_s","resend_hz","timeout_s","warmup_s","idle_pre_s","idle_post_s",
+                    "loadcell_baud","tare_s","ref_a","ref_b","ref_every_n_steps"];
+// 측정에는 영향 없고 run.json 에 기록되는 항목들(저장 폴더 포함).
 const TEXT_FIELDS = ["out_dir","prop","battery","notes"];
 // 체크박스 항목
-const BOOL_FIELDS = ["randomize","bracket"];
+const BOOL_FIELDS = ["randomize","bracket","no_motor"];
 
 function $(id){ return document.getElementById(id); }
 
 // --- 입력값 모으기 ---
 function readCfg(){
-  const cfg = { device: $("device").value.trim() };
+  const cfg = {
+    device: $("device").value.trim(),
+    loadcell_device: $("loadcell_device").value.trim(),
+  };
   NUM_FIELDS.forEach(k => cfg[k] = Number($(k).value));
   // 문자열 항목(저장 폴더 + 메모). 숫자 변환하면 안 되므로 따로 처리한다.
   TEXT_FIELDS.forEach(k => cfg[k] = $(k).value.trim());
@@ -210,11 +243,16 @@ function validateAndEstimate(){
   else if (c.resend_hz <= 0) err = "재전송 Hz는 0보다 커야 합니다.";
   else if (c.timeout_s <= 1.0 / c.resend_hz)
     err = "timeout 은 재전송 간격(1/Hz)보다 커야 값이 유지됩니다.";
+  else if (c.tare_s < 0) err = "tare(s)는 0 이상이어야 합니다.";
+  else if (c.loadcell_device && c.loadcell_baud <= 0) err = "loadcell baud는 0보다 커야 합니다.";
+  else if (c.ref_every_n_steps < 0) err = "기준점 재방문 주기는 0 이상이어야 합니다.";
+  else if (c.ref_every_n_steps > 0 && !([c.ref_a, c.ref_b].every(inRange)))
+    err = "기준점 A/B 도 1000~2000µs 범위여야 합니다.";
 
   const combos = countAxis(c.a_start,c.a_end,c.a_step) * countAxis(c.b_start,c.b_end,c.b_step);
   const points = combos * c.repeats;
   // 계단식이라 스텝 사이 정지/간격 없음 → 대략 소요 = 점 개수 × dwell (+ warmup 1회)
-  const estSec = Math.max(0, points * c.dwell_s + c.warmup_s + 2 * (c.idle_s || 0));
+  const estSec = Math.max(0, points * c.dwell_s + c.warmup_s + (c.idle_pre_s || 0) + (c.idle_post_s || 0));
 
   $("formError").textContent = err;
   $("estimate").innerHTML = err ? "설정을 확인하세요." :
@@ -294,6 +332,9 @@ function render(s){
   $("kAB").textContent = (s.a_us || s.b_us) ? `${s.a_us} / ${s.b_us}` : "– / –";
   $("kVolt").textContent = s.voltage_v == null ? "–" : s.voltage_v.toFixed(2);
   $("kCurr").textContent = s.current_a == null ? "–" : s.current_a.toFixed(2);
+  $("kThrust").textContent = s.thrust_n == null ? "–" : s.thrust_n.toFixed(2);
+  $("kTorque").textContent = s.torque_nm == null ? "–" : s.torque_nm.toFixed(3);
+  $("kLoadcellHz").textContent = s.loadcell_hz ? s.loadcell_hz.toFixed(0) : "–";
   $("kElapsed").textContent = (s.elapsed_s || 0).toFixed(0);
   $("kEta").textContent = s.eta_s ? s.eta_s.toFixed(0) + "s" : "–";
   $("serverMsg").textContent = s.message || "";

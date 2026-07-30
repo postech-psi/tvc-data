@@ -1,27 +1,57 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BLDC 추력 맵핑용 2D PWM 격자 '계단식' 스윕 + 로깅 — HTML GUI 버전 (측정 로직 + 로컬 웹서버 한 파일)
+BLDC 추력 맵핑용 2D PWM 격자 '계단식' 스윕 + 로드셀 통합 로깅 — HTML GUI 버전
+(측정 로직 + 로컬 웹서버 + STM32 로드셀 리더 한 파일)
 
 [이 파일이 하는 일]
-  1) 파이썬 표준 라이브러리만으로 '작은 로컬 웹서버'를 띄운다.
+  1) 파이썬 표준 라이브러리 + pymavlink + pyserial만으로 '작은 로컬 웹서버'를 띄운다.
   2) 브라우저에서 http://localhost:8000 을 열면 옆에 있는 pwm_map_gui.html 을 배달한다.
   3) GUI에서 [측정 시작]을 누르면, 그 설정대로 픽스호크에 PWM(액추에이터 테스트)을 보내며
-     실제 PWM(µs)·전압·전류를 CSV로 기록한다. (pwm_thrust_grid.py 와 같은 방식/같은 컬럼)
+     실제 PWM(µs)·전압·전류·RPM 을 기록하고, 동시에 STM32 로드셀(Fx..Tz, USB 시리얼)을
+     같은 프로세스·같은 시계(time.time())로 함께 기록한다 — 별도 노트북/별도 시계로 인한
+     사후 시간정렬이 필요 없다.
   4) 측정 진행상황을 GUI가 0.5초마다 물어보면(GET /status) 알려준다(진행바·현재값·남은시간).
 
-  ※ 이 파일은 pwm_thrust_grid.py 를 import 하지 않는다. 공통으로 쓰는 함수는
-    (요청대로) 복사해서 이 파일 안에 독립적으로 두었다. pymavlink 만 외부 의존성.
+[로드셀이 왜 여기 있나]
+  예전에는 로드셀이 벤치 노트북(gui.py, superseded)에 물려 있어 커맨드(Pi)와 힘(노트북)이
+  서로 다른 시계를 썼다. 이 파일은 로드셀을 Pi에 직접 연결해 커맨드를 보내는 바로 그
+  프로세스가 힘도 같이 찍는다 — 시간정렬이 필요 없어진다. tvcbench(별도 CLI/plan 기반
+  재작성)가 이미 이 통합을 하지만, 이 파일은 그 로직을 (기존 관행대로) import 없이
+  독립적으로 복사해 두어, 웹 GUI 하나로 붙여 쓰는 단순한 운영 방식을 유지한다.
 
-[측정 구조 — 팀과 합의한 계획 (계단식)]
+  ※ 실측으로 확인된 중요한 사실: STM32 로드셀은 'ARM <값>'을 50Hz로 계속 보내주지 않으면
+    자체적으로 ~10Hz로만 상태줄을 내보낸다(계속 보내면 50Hz). tvcbench의 로드셀 코드는
+    이 하트비트를 전혀 보내지 않아 실제로는 항상 ~10Hz로만 기록되고 있었다 — 이 파일은
+    그 하트비트를 구현해 실제 50Hz 로 기록되도록 고쳤다. 보내는 값은 항상 1000(idle)
+    고정이며, 모터를 구동하지 않는다(모터 구동은 Pixhawk가 별도로 함) — 로드셀 자신의
+    샘플링 주기를 유지하기 위한 용도일 뿐이다.
+
+[측정 구조 — 팀과 합의한 계획 (계단식, 단순 유지)]
   - 격자 범위 입력: A(고정축) 시작/끝/스텝, B(스윕축) 시작/끝/스텝 → (A,B) 조합 목록 자동 생성.
       · A·B의 시작=끝 으로 넣으면 조합이 1개 → "배터리 아껴 한 조합만" 케이스도 이걸로 커버.
   - '계단식': 각 조합을 dwell초 동안 유지·기록한 뒤, 멈추거나 쉬지 않고 곧바로 다음 조합 PWM으로
-    올라간다(정지/안정화/간격 단계 없음).
+    올라간다(정지/안정화/간격 단계 없음). dwell 은 고정값만 지원한다(적응형 모드 없음 — 단순 유지).
   - 스윕 반복(N): 격자 전체를 한 바퀴 도는 것을 1스윕이라 하면, 이를 N번 반복한다(반복 사이도 안 쉼).
+    randomize=True 면 반복마다 새로 셔플한다(blocked_random — 배터리 드리프트와 PWM의 상관을 끊음).
   - 안전을 위해 '맨 마지막 종료 시에만' 서서히 정지(램프다운)한다.
+  - 안전 한계는 기존과 동일하게 min_voltage_v 컷오프 하나만 사용한다(로드셀이 생겨도
+    추력/토크 기반 추가 중단 조건은 넣지 않음 — 단순함 우선).
 
-[동작 원리 — PX4 공식 경로]  (pwm_thrust_grid.py 와 동일)
+[CSV 출력 — 스트림별 별도 파일, 가짜 rate 없음]
+  예전 버전은 SERVO_OUTPUT_RAW 메시지가 올 때마다 한 줄을 쓰고 그 순간의 최신 전압/전류를
+  끼워 넣었다 — 10Hz 짜리 값을 20Hz 로 '위조'하는 셈이었다(tvcbench 문서가 지적한 결함).
+  이 버전은 각 스트림이 자기 고유 주기로 자기 파일에만 쓴다:
+    A<a범위>_B<b범위>_<날짜>_<시각>/   예: A1000_B1000-1200_2026-07-31_143022/
+      servo.csv      각 SERVO_OUTPUT_RAW 수신마다   (실측 PWM, ~18-20Hz)
+      battery.csv    각 BATTERY_STATUS 수신마다      (전압/전류, ~10-20Hz)
+      esc.csv        각 ESC_STATUS 수신마다          (RPM, 지원 ESC 없으면 파일은 헤더만)
+      loadcell.csv   각 로드셀 상태줄 수신마다        (Fx..Tz, ARM 하트비트로 ~50Hz)
+      run.json       설정값 + tare 오프셋 + 스트림별 실측 Hz + 격자/스텝 요약
+  네 파일 모두 phase(예: "A1400_B1700")·sweep_idx·a_cmd_us/b_cmd_us 를 매 줄에 직접 싣는다
+  (별도 시퀀스 테이블과 join 하지 않아도 각 CSV 만으로 바로 분석 가능하게).
+
+[동작 원리 — PX4 공식 경로]
   * MAV_CMD_ACTUATOR_TEST(310): '출력 기능(Motor1/Motor2)' 단위로 값을 직접 구동.
     QGroundControl Actuators 화면의 테스트 슬라이더가 쓰는 바로 그 명령.
   * 명령값은 '정규화값'(µs가 아님). 모터 정의역 [0,1]: 0→최소(PWM_MIN_US), 1→최대(PWM_MAX_US).
@@ -35,13 +65,17 @@ BLDC 추력 맵핑용 2D PWM 격자 '계단식' 스윕 + 로깅 — HTML GUI 버
   * ESC가 물린 채널에서 Minimum=1000, Maximum=2000, Disarmed=1000
   * THR_MDL_FAC = 0  (추력곡선 보정 끄기 → 정규화↔PWM 이 완전 선형)
 
+[no_motor — 드라이런]
+  cfg["no_motor"]=True 면 타이밍/재전송/CSV 기록/로드셀/ARM 하트비트는 전부 평소와 동일하게
+  돌아가되, 실제 Pixhawk 로 나가는 send_actuator_test 호출만 생략한다. 모터를 돌리지 않고
+  이 파일의 배관(로깅 파이프라인)을 검증할 때 쓴다.
 
 [실행]
     python3 pwm_thrust_map.py          # 서버 시작 → 브라우저에서 localhost:8000
     (개발/검증) 브라우저 GUI의 device 칸에 udpin:0.0.0.0:14550 을 넣으면 SITL/QGC로 로직만 확인
     종료: 이 터미널에서 Ctrl+C (측정 중이면 모터 정지+CSV 저장 후 종료)
 
-의존성: pymavlink + 파이썬 표준 라이브러리(http.server, threading, json, csv ...) 뿐.
+의존성: pymavlink + pyserial + 파이썬 표준 라이브러리(http.server, threading, json, csv ...) 뿐.
 """
 
 import argparse
@@ -51,9 +85,11 @@ import os
 import random
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from pymavlink import mavutil   # 유일한 외부 라이브러리
+from pymavlink import mavutil   # 픽스호크용 외부 라이브러리
+import serial                   # 로드셀(STM32, USB CDC)용 외부 라이브러리
 
 
 # ============================================================================
@@ -86,50 +122,72 @@ MAX_DRAIN_PER_LOOP = 40
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
-OUT_PREFIX = "thrust_map"   # 출력 CSV 파일명 앞부분
+
+# --- 로드셀(STM32) 관련 상수 ---
+# 실측: 이 값을 50Hz로 계속 보내지 않으면 로드셀은 자체적으로 ~10Hz 로만 상태줄을 낸다.
+LOADCELL_ARM_HZ = 50.0
+LOADCELL_ARM_VALUE = 1000          # 항상 idle 고정 — 모터를 구동하지 않는다(하트비트 전용)
+LOADCELL_READ_TIMEOUT_S = 0.05
+LOADCELL_MAX_LINE_BYTES = 4096     # 이보다 긴 '줄'은 프로토콜이 아니라 끼인 프레이머 — 버림
+FT_CHANNELS = ("Fx", "Fy", "Fz", "Tx", "Ty", "Tz")
+MN_TO_N = 1e-3                      # 로드셀은 mN/mN*m 단위로 보고 → SI(N/N*m)로 변환
 
 # GUI에서 값이 일부만 오거나 이상해도 안전하게 돌도록 하는 '기본 설정'.
 # (GUI가 보낸 값으로 덮어쓴 뒤, validate_cfg 로 최종 검증한다)
 DEFAULT_CFG = {
-    "device": "/dev/ttyAMA0",   # Pi5 GPIO UART(핀 8·10). 개발용은 "udpin:0.0.0.0:14550"
+    "device": "/dev/ttyAMA0",   # Pi5 GPIO UART(핀 8·10, 픽스호크). 개발용은 "udpin:0.0.0.0:14550"
     "baud": 921600,             # 픽스호크 TELEM2 권장 속도
     "a_start": 1000, "a_end": 1000, "a_step": 100,   # A(고정축) 격자 범위 µs
     "b_start": 1000, "b_end": 2000, "b_step": 100,   # B(스윕축) 격자 범위 µs
     "repeats": 1,               # 격자 전체 스윕을 몇 번 반복할지 (1이면 한 바퀴)
-    "dwell_s": 2.0,             # 각 조합에서 '유지+기록' 시간 (계단 한 칸의 길이)
+    "dwell_s": 3.0,             # 각 조합에서 '유지+기록' 시간 (계단 한 칸의 길이, 고정값만 지원)
     "resend_hz": 5.0,           # ACTUATOR_TEST 재전송 주기(타임아웃으로 값이 풀리지 않게)
     "timeout_s": 1.0,           # 각 명령의 타임아웃(초). 재전송 간격(1/resend_hz)보다 커야 함
     "warmup_s": 3.0,            # 시작 시 ESC arming 을 위해 최소값(0)으로 잠깐 대기
     # --- 측정 설계(교란 제거용) ---
-    "idle_s": 10.0,             # 스윕 전/후 '무부하' 구간을 기록(양 채널 1000µs, 전류≈0).
-                                # 여기서 읽은 전압이 배터리의 '실제 잔량'(SoC)이다.
-                                # 부하 중 전압은 IR 강하가 섞여 있어 런끼리 비교 불가.
-    "servo_hz": 50,             # SERVO_OUTPUT_RAW 요청 주기. CSV 한 줄이 이 메시지마다 나온다.
-    "bat_hz": 20,               # BATTERY_STATUS 요청 주기
-    "esc_hz": 20,               # ESC_STATUS(RPM) 요청 주기. 미지원 ESC면 그냥 안 온다.
+    "idle_pre_s": 5.0,          # 스윕 '전' 무부하 구간(양 채널 1000µs, 전류≈0) — 기록 시간(초).
+    "idle_post_s": 30.0,        # 스윕 '후' 무부하 구간 — 기록 시간(초). 전압 회복(relaxation)이
+                                # 부하 직후 30~60초에 걸쳐 일어나므로 pre 보다 길게 두는 게 보통 낫다.
+                                # 여기서 읽은 전압이 배터리의 '실제 잔량'(SoC)에 가장 가깝다.
+    "servo_hz": 50,             # SERVO_OUTPUT_RAW 요청 주기. servo.csv 한 줄이 이 메시지마다 나온다.
+    "bat_hz": 50,               # BATTERY_STATUS 요청 주기. 예전엔 20으로 뒀지만 이 기체에서
+                                # 실측으로 50Hz 가 그대로 나오는 걸 확인해서 상향(PX4 내부 발행
+                                # 상한에 걸리면 achieved_rates 가 낮게 찍혀서 바로 드러난다).
+    "esc_hz": 50,               # ESC_STATUS(RPM) 요청 주기. 미지원 ESC면 그냥 안 온다(비용 없음).
     "min_voltage_v": 0.0,       # 이 전압 아래로 내려가면 즉시 중단(리포 보호). 3S면 9.9 권장.
-    "randomize": False,         # 계단 순서 섞기 → 전압 드리프트와 PWM의 상관을 끊는다
+    "randomize": False,        # True 면 '반복마다 새로 셔플'(blocked_random) — 배터리 드리프트와
+                                # PWM의 상관을 끊는다. 예전처럼 한 번만 섞어 반복마다 재사용하지 않는다.
     "bracket": False,           # 첫 조합을 맨 뒤에 반복 → 스윕 중 드리프트를 직접 측정
-    "seed": 0,                  # randomize 재현용 시드(0이면 매번 다름)
+    "seed": 0,                  # randomize 재현용 시드(0이면 매번 새로 고름)
+    # --- 로드셀(STM32) ---
+    "loadcell_device": "/dev/ttyACM0",   # 비워두면(""), 로드셀 없이 PWM/전압/전류만 기록
+    "loadcell_baud": 115200,
+    "tare_s": 5.0,              # 측정 시작 전 이 시간(초) 동안의 평균을 0점으로 뺀다(비파괴적 tare)
+    # --- 스윕 설계 옵션(선택, 기본은 꺼짐 → 안 쓰면 예전과 동일) ---
+    "ref_a": 0, "ref_b": 0,     # 주기적으로 되돌아갈 기준점(µs). ref_every_n_steps=0 이면 무시.
+    "ref_every_n_steps": 0,     # N 스텝마다 기준점을 한 번 방문 → 드리프트를 covariate 로 보정 가능
+    # --- 검증/드라이런 ---
+    "no_motor": False,          # True 면 실제 액추에이터 명령만 생략(그 외 로직은 전부 동일)
     # --- 아래는 데이터 정리용(측정 자체에는 영향 없음) ---
-    "out_dir": "",              # CSV 저장 폴더(빈 값이면 현재 폴더). 예: "raw/2026-07-25"
+    "out_dir": "raw/pwm",       # CSV 저장 폴더. 기본이 repo 루트에 바로 쌓이지 않도록
+                                # raw/ 밑에 둔다(다른 데이터 전부 이 관례를 따름 — README 참고).
+                                # 나중에 tvctools organize 가 raw/<날짜>/pwm/ 로 다시 정리한다.
     "notes": "",                # 이 런에 대한 자유 메모
     "prop": "",                 # 프로펠러 사양
     "battery": "",              # 배터리 사양(셀 수/용량 등)
 }
 
-# CSV 컬럼(헤더). pwm_thrust_grid.py 와 '동일' + 맨 뒤에 sweep_idx(몇 번째 스윕인지) 한 개만 추가.
-#   servo1~8_raw = 각 물리 출력 채널의 '실제' PWM(µs) 실측값.
-#   → 로드셀 로그와 t_epoch(에폭 시각)로 병합할 때 기존 파이프라인과 그대로 호환된다.
-#   esc1~4_rpm   = ESC 텔레메트리(ESC_STATUS #291)의 실측 RPM. 지원 ESC가 없으면 빈 칸.
-#     → RPM 이 있으면 '전압이 추력을 바꾼다'와 '전압이 RPM 을, RPM 이 추력을 바꾼다'를
-#       분리할 수 있다. 지금 데이터로는 이 둘이 섞여 있어 구분이 불가능하다.
-CSV_HEADER = (
-    ["t_epoch", "t_fc_us", "phase",
-     "a_cmd_us", "b_cmd_us", "a_cmd_norm", "b_cmd_norm"]
-    + [f"servo{i}_raw" for i in range(1, 9)]
-    + ["voltage_v", "current_a", "sweep_idx"]
-    + [f"esc{i}_rpm" for i in range(1, 5)]
+# CSV 컬럼 — 스트림마다 별도 파일. 모든 파일에 공통 접두 컬럼을 그대로 싣는다
+# (별도 시퀀스 테이블과 join 하지 않아도 각 CSV 파일 하나만으로 바로 분석 가능하게).
+COMMON_PREFIX = ["t_epoch", "phase", "sweep_idx", "a_cmd_us", "b_cmd_us", "a_cmd_norm", "b_cmd_norm"]
+
+SERVO_COLUMNS = COMMON_PREFIX + ["t_fc_us"] + [f"servo{i}_raw" for i in range(1, 9)]
+BATTERY_COLUMNS = COMMON_PREFIX + ["voltage_v", "current_a"]
+ESC_COLUMNS = COMMON_PREFIX + [f"esc{i}_rpm" for i in range(1, 5)]
+LOADCELL_COLUMNS = (
+    COMMON_PREFIX + ["t_stm_ms"]
+    + [f"{ch}_raw" for ch in FT_CHANNELS] + list(FT_CHANNELS)
+    + ["force_count", "torque_count"]
 )
 
 
@@ -157,13 +215,18 @@ def us_to_norm(us):
     return max(0.0, min(1.0, norm))
 
 
-def send_actuator_test(conn, func, value, timeout_s):
+def send_actuator_test(conn, func, value, timeout_s, enabled=True):
     """출력 기능(func)을 정규화값 value 로 timeout_s초 동안 구동하라고 1회 명령한다.
+
+    enabled=False(no_motor 드라이런) 면 아무것도 보내지 않고 조용히 리턴한다 — 호출부의
+    타이밍/재전송 로직은 그대로 두고 실제 하드웨어 액추에이션만 끄기 위한 단일 관문.
 
     command_long 파라미터 매핑:
         param1=value(0~1), param2=timeout_s(이 시간 뒤 기본값 복귀),
         param3,4=예약(0), param5=func(Motor1=1, Motor2=2 ...), param6,7=미사용(0)
     """
+    if not enabled:
+        return
     conn.mav.command_long_send(
         conn.target_system, conn.target_component,
         ACTUATOR_TEST,
@@ -194,10 +257,6 @@ def request_rates(conn, servo_hz=50, bat_hz=20, esc_hz=20):
                         설정(예: DSHOT_TEL_CFG)이 있어야 나온다. 없으면 그냥 안 올 뿐이라
                         요청해도 손해는 없다.
     interval(µs) = 1e6 / rate_hz
-
-    대역폭: 921600 baud ≈ 92 kB/s. 위 세 메시지를 50/20/20 Hz 로 받아도
-    (49B*50 + 66B*20 + 46B*20) ≈ 4.7 kB/s 로 약 5% 에 불과하다. 즉 상한은
-    시리얼 대역폭이 아니라 PX4 내부 발행 주기와 MAV_x_RATE 설정이다.
     """
     targets = [
         (mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, servo_hz),
@@ -222,15 +281,10 @@ def request_rates(conn, servo_hz=50, bat_hz=20, esc_hz=20):
 def read_battery(msg):
     """BATTERY_STATUS(#147)에서 QGroundControl과 '완전히 동일한 알고리즘'으로 (전압V, 전류A)를 계산.
 
-    QGC 소스(src/Vehicle/FactGroups/BatteryFactGroupListModel.cc)의 전압 계산과 일치시킨다:
-      · voltages[0..9]를 순서대로 더하되, UINT16_MAX(65535)를 '처음' 만나면 즉시 멈춘다(break).
-      · 이어서 voltages_ext[0..3]를 더하되, 0(미지원)을 '처음' 만나면 즉시 멈춘다(break).
-      · current_battery: -1이면 미측정(None), 아니면 cA(10mA단위)→A.
-    MAVLink 스펙상 PX4는 유효 셀을 index 0부터 '연속'으로 채우고 나머지를 UINT16_MAX로 두므로,
-    '건너뛰기'가 아니라 '처음 무효값에서 멈춤'이 정확한 재구성이며 QGC 표시값과 값이 완전 일치한다.
-    (셀 정보가 없으면 총전압이 voltages[0]에 통째로 담긴다. 전압 divider 캘리브레이션은 QGC가
-     아니라 픽스호크(PX4) 펌웨어에서 이미 적용되어 전송된다.)
-    반환: (voltage_v 또는 None, current_a 또는 None)
+    voltages[0..9]를 순서대로 더하되 UINT16_MAX(65535)를 '처음' 만나면 멈추고, 이어서
+    voltages_ext[0..3]를 0을 '처음' 만나면 멈추고 더한다(PX4는 유효 셀을 index 0부터
+    연속으로 채우므로 '처음 무효값에서 멈춤'이 정확한 재구성). current_battery: -1이면
+    미측정(None), 아니면 cA(10mA단위)→A.
     """
     total_mv = None
     for v in msg.voltages:                        # 셀 1~10 (mV)
@@ -246,12 +300,14 @@ def read_battery(msg):
     return voltage_v, current_a
 
 
-def preflight_ack(conn, timeout_s):
+def preflight_ack(conn, timeout_s, enabled=True):
     """정지값(v=0)을 모터 A에 한 번 보내고 COMMAND_ACK로 픽스호크가 수락하는지 확인한다.
 
+    enabled=False(no_motor) 면 실제로는 아무것도 보내지 않고 그렇다고 명시한 메시지만 반환한다.
     반환: (ok: bool, 사람이 읽을 메시지 문자열). 여기서 실패해도 치명은 아님(진행 가능).
-    v=0 은 최소(1000µs)=정지로 매핑되므로, 캘리브레이션된 ESC라면 모터가 돌지 않는다.
     """
+    if not enabled:
+        return True, "no_motor: 액추에이터 프리플라이트 생략(실제 명령 전송 안 함)"
     send_actuator_test(conn, MOTOR_A_FUNC, STOP_VALUE, timeout_s)
     ack = conn.recv_match(type="COMMAND_ACK", blocking=True, timeout=2.0)
     if ack is None or ack.command != ACTUATOR_TEST:
@@ -263,65 +319,50 @@ def preflight_ack(conn, timeout_s):
     return False, f"거부됨(result={ack.result}). QGC에서 Motor1/2 배정을 확인하세요"
 
 
-def stop_motors_immediate(conn, timeout_s):
+def stop_motors_immediate(conn, timeout_s, enabled=True):
     """[긴급/최종] 두 모터를 정지값(v=0 → 1000µs)으로 즉시 몇 번 보내 끈다(램프 없음).
 
     STOP 버튼·watchdog·오류·종료 시 사용. 재전송을 멈추면 타임아웃으로도 정지된다.
     """
     for _ in range(5):
-        send_actuator_test(conn, MOTOR_A_FUNC, STOP_VALUE, timeout_s)
-        send_actuator_test(conn, MOTOR_B_FUNC, STOP_VALUE, timeout_s)
+        send_actuator_test(conn, MOTOR_A_FUNC, STOP_VALUE, timeout_s, enabled=enabled)
+        send_actuator_test(conn, MOTOR_B_FUNC, STOP_VALUE, timeout_s, enabled=enabled)
         time.sleep(0.05)
 
 
-def _ramp_step(conn, a, b, timeout_s, log=None, phase="ramp"):
+def _ramp_step(conn, a, b, timeout_s, log=None, phase="ramp", enabled=True):
     """램프 한 칸: 명령을 보내고, 로깅 컨텍스트가 있으면 그 구간도 '기록'한다.
 
     램프 구간을 기록해야 하는 이유 — 여기가 추력이 가장 크게 변하는 지점이다.
-    스윕 종료 램프다운은 추력을 ~9N 움직이는데(노이즈 0.7N 대비 13σ), 예전에는
-    time.sleep 만 하고 아무것도 안 남겨서 이 '가장 뚜렷한 에지'가 CSV에 없었다.
-    로드셀 로그와 시각을 맞출 때 가장 쓸모 있는 특징이 바로 이 구간이다.
     """
     if log is not None:
         # hold_and_log 이 명령 전송 + 수신 기록을 함께 처리한다
-        hold_and_log(log["ctl"], conn, log["writer"], log["latest"], log["cfg"],
+        hold_and_log(log["ctl"], conn, log["writers"], log["latest"], log["cfg"],
                      int(round(a)), int(round(b)), phase,
-                     RAMP_S / RAMP_STEPS, record=True, sweep_idx=log["sweep_idx"])
+                     RAMP_S / RAMP_STEPS, record=True, sweep_idx=log["sweep_idx"],
+                     loadcell=log.get("loadcell"), enabled=enabled)
     else:
-        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s)
-        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s)
+        send_actuator_test(conn, MOTOR_A_FUNC, us_to_norm(a), timeout_s, enabled=enabled)
+        send_actuator_test(conn, MOTOR_B_FUNC, us_to_norm(b), timeout_s, enabled=enabled)
         time.sleep(RAMP_S / RAMP_STEPS)
 
 
-def ramp_down(conn, a_us, b_us, timeout_s, log=None):
-    """[정상 종료] 현재 (a_us,b_us)에서 최소값(1000µs)까지 여러 단계로 '서서히' 내린다.
-
-    측정을 정상적으로 다 마쳤을 때 딱 한 번 사용 — 급격한 전류 컷·기계적 충격 완화용.
-    (긴급 상황에는 쓰지 않는다. 긴급은 stop_motors_immediate 로 즉시 끈다)
-
-    log 을 주면 이 구간을 phase="ramp_down" 으로 기록한다. 중단(abort) 경로에서는
-    writer 가 이미 닫혔을 수 있으므로 log=None 으로 호출해 기록을 건너뛴다.
-    """
+def ramp_down(conn, a_us, b_us, timeout_s, log=None, enabled=True):
+    """[정상 종료] 현재 (a_us,b_us)에서 최소값(1000µs)까지 여러 단계로 '서서히' 내린다."""
     for i in range(1, RAMP_STEPS + 1):
         frac = 1.0 - i / float(RAMP_STEPS)        # 1 → 0 으로 감소
         a = PWM_MIN_US + (a_us - PWM_MIN_US) * frac
         b = PWM_MIN_US + (b_us - PWM_MIN_US) * frac
-        _ramp_step(conn, a, b, timeout_s, log, "ramp_down")
+        _ramp_step(conn, a, b, timeout_s, log, "ramp_down", enabled=enabled)
 
 
-def ramp_to(conn, from_a, from_b, to_a, to_b, timeout_s, log=None):
-    """[정상 전환] (from_a,from_b) → (to_a,to_b) 로 여러 단계에 걸쳐 '서서히' 이동한다.
-
-    한 세트(스윕)가 끝나고 다음 세트를 시작할 때, PWM을 한 번에 확 줄이지 않고
-    부드럽게 내려서(또는 올려서) 새 세트를 시작하기 위한 용도.
-    RAMP_S초 동안 RAMP_STEPS 단계로 선형 보간한다.
-    log 을 주면 phase="ramp_between" 으로 기록해 스윕 사이에 공백이 남지 않게 한다.
-    """
+def ramp_to(conn, from_a, from_b, to_a, to_b, timeout_s, log=None, enabled=True):
+    """[정상 전환] (from_a,from_b) → (to_a,to_b) 로 여러 단계에 걸쳐 '서서히' 이동한다."""
     for i in range(1, RAMP_STEPS + 1):
         frac = i / float(RAMP_STEPS)              # 0 → 1
         a = from_a + (to_a - from_a) * frac
         b = from_b + (to_b - from_b) * frac
-        _ramp_step(conn, a, b, timeout_s, log, "ramp_between")
+        _ramp_step(conn, a, b, timeout_s, log, "ramp_between", enabled=enabled)
 
 
 def frange_us(start, end, step):
@@ -334,54 +375,93 @@ def frange_us(start, end, step):
     return values
 
 
-def write_run_sidecar(out_path, cfg, t_start):
-    """측정 설정을 CSV 옆에 <이름>.run.json 으로 남긴다.
+def describe_grid(cfg):
+    """격자 범위를 'A1400_B1000-2000' 처럼 사람이 읽는 문자열로 — runs/ 폴더 관례와 동일.
 
-    CSV 에는 결과(phase 열)만 들어가고 dwell_s·repeats·격자 범위 같은 '어떻게 측정했는지'는
-    사라진다. 나중에 런을 재현하거나 비교하려면 이 정보가 꼭 필요하므로 따로 저장한다.
-    device·baud 같은 접속 정보는 데이터 분석과 무관하므로 제외.
+    시작=끝이면 값 하나만(A1400), 아니면 범위(B1000-2000)로 표기한다. 출력 폴더 이름에
+    바로 써서, 폴더 목록만 보고도 무슨 스윕이었는지(어떤 축을 고정했고 뭘 스윕했는지)
+    파일을 열어보지 않고 바로 식별 가능하게 한다.
     """
-    meta = {k: cfg.get(k) for k in (
-        "a_start", "a_end", "a_step", "b_start", "b_end", "b_step",
-        "repeats", "dwell_s", "warmup_s", "resend_hz",
-        "idle_s", "randomize", "bracket", "seed",
-        "servo_hz", "bat_hz", "esc_hz", "min_voltage_v",
-        "notes", "prop", "battery")}
-    meta["t_start_epoch"] = t_start
-    meta["csv"] = os.path.basename(out_path)
+    def axis(start, end):
+        return f"{start}" if start == end else f"{start}-{end}"
+    return f"A{axis(cfg['a_start'], cfg['a_end'])}_B{axis(cfg['b_start'], cfg['b_end'])}"
+
+
+def write_run_json(out_dir, updates):
+    """run.json 을 읽고(있으면) 병합해서 다시 쓴다.
+
+    측정 시작 직전에 cfg 로 한 번 써 두면(크래시 나도 설정은 남는다), 끝날 때 실측 Hz·tare
+    오프셋·outcome 을 같은 파일에 덮어써 완성한다.
+    """
+    path = os.path.join(out_dir, "run.json")
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    data.update(updates)
     try:
-        with open(os.path.splitext(out_path)[0] + ".run.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
     except OSError:
         pass   # 메타 저장 실패가 측정을 막으면 안 된다
 
 
-def build_combos(cfg):
-    """격자 범위(cfg)로 (A,B) 조합 목록을 만든다. A가 바깥, B가 안쪽(= grid 파일과 동일 순서).
+def build_orders(cfg):
+    """격자 범위(cfg)로 '반복(repeat)마다 하나씩'인 (A,B) 방문 순서 리스트들을 만든다.
 
-    A·B 시작=끝 이면 각 축이 1개 → 조합 1개("한 조합만" 케이스).
-    이 목록 순서가 곧 '계단'을 올라가는 순서다.
+    반환값은 길이 repeats 인 리스트이며, 각 원소가 그 반복에서 방문할 (a,b) 튜플 리스트다.
+    A가 바깥, B가 안쪽(격자 생성 순서는 grid 파일과 동일).
 
-    randomize=True 면 순서를 섞는다. 배터리는 스윕 도중 계속 소모되므로, 순서대로
-    올라가면 '전압 하락'과 'PWM 상승'이 완전히 겹쳐서 둘을 구분할 수 없다(교란).
-    순서를 섞으면 전압 드리프트가 PWM과 무상관이 되어 계통 오차가 아니라 산포로 바뀐다.
+    randomize=True 면 '반복마다 새로 셔플'한다(blocked_random) — 예전처럼 한 번만 섞어
+    반복마다 그대로 재사용하면, 배터리는 스윕 내내 계속 소모되므로 '전압 하락'과 'PWM
+    상승'이 완전히 겹쳐 버려 구분이 불가능하다(교란). 반복마다 독립적으로 다시 섞으면
+    각 PWM 레벨이 매 반복 배터리 잔량 구간에 고르게 걸치게 되어 이 교란이 사라진다.
+    시드는 f"{seed}:{repeat}" 로 구성해 하나의 시드값만 기록해도 재현 가능하다.
 
-    bracket=True 면 첫 조합을 맨 뒤에 한 번 더 넣는다. 처음과 마지막의 같은 조합을
-    비교하면 그 스윕 동안 일어난 드리프트(배터리·발열)를 직접 측정할 수 있다.
+    bracket=True 면 각 반복의 맨 뒤에 그 반복의 첫 조합을 한 번 더 넣는다 — 처음과 마지막의
+    같은 조합을 비교하면 그 스윕 동안 일어난 드리프트(배터리·발열)를 직접 측정할 수 있다.
+
+    ref_every_n_steps>0 이면 N 스텝마다 고정 기준점(ref_a,ref_b)을 한 번 방문한다(반복의
+    마지막 스텝 뒤에는 넣지 않음 — 어차피 곧 다음 반복이나 ramp_down 으로 이어지므로).
+    기본값은 0(꺼짐)이라 안 쓰면 예전과 완전히 동일하게 동작한다.
     """
     a_vals = frange_us(cfg["a_start"], cfg["a_end"], cfg["a_step"])
     b_vals = frange_us(cfg["b_start"], cfg["b_end"], cfg["b_step"])
-    combos = [(a, b) for a in a_vals for b in b_vals]
+    points = [(a, b) for a in a_vals for b in b_vals]
+    repeats = cfg["repeats"]
+    seed = cfg.get("seed") or 0
 
     if cfg.get("randomize"):
-        seed = cfg.get("seed")
-        rng = random.Random(seed if seed else None)
-        rng.shuffle(combos)
+        orders = []
+        for r in range(repeats):
+            rng = random.Random(f"{seed}:{r}")
+            shuffled = list(points)
+            rng.shuffle(shuffled)
+            orders.append(shuffled)
+    else:
+        orders = [list(points) for _ in range(repeats)]
 
-    if cfg.get("bracket") and len(combos) > 1:
-        combos = combos + [combos[0]]
+    if cfg.get("bracket") and len(points) > 1:
+        for order in orders:
+            order.append(order[0])
 
-    return combos
+    ref_every = int(cfg.get("ref_every_n_steps") or 0)
+    if ref_every > 0:
+        ref_point = (int(cfg["ref_a"]), int(cfg["ref_b"]))
+        spliced_orders = []
+        for order in orders:
+            spliced = []
+            for i, pt in enumerate(order, start=1):
+                spliced.append(pt)
+                if i % ref_every == 0 and i != len(order):
+                    spliced.append(ref_point)
+            spliced_orders.append(spliced)
+        orders = spliced_orders
+
+    return orders
 
 
 # ============================================================================
@@ -422,8 +502,241 @@ def validate_cfg(cfg):
     # 타임아웃이 재전송 간격보다 짧으면 모터 명령이 중간에 끊긴다(값 유지 실패).
     if cfg["timeout_s"] <= 1.0 / cfg["resend_hz"]:
         raise ValueError("timeout_s 가 재전송 간격(1/resend_hz)보다 커야 값이 유지됩니다")
-    if not build_combos(cfg):
+    if cfg["tare_s"] < 0:
+        raise ValueError("tare_s 는 0 이상이어야 합니다")
+    if cfg.get("loadcell_device") and cfg["loadcell_baud"] <= 0:
+        raise ValueError("loadcell_baud 는 0보다 커야 합니다")
+    ref_every = int(cfg.get("ref_every_n_steps") or 0)
+    if ref_every < 0:
+        raise ValueError("ref_every_n_steps 는 0 이상이어야 합니다")
+    if ref_every > 0:
+        for name in ("ref_a", "ref_b"):
+            if not (PWM_MIN_US <= cfg[name] <= PWM_MAX_US):
+                raise ValueError(f"{name} 는 {PWM_MIN_US}~{PWM_MAX_US}µs 범위여야 합니다 (현재 {cfg[name]})")
+    if not any(build_orders(cfg)):
         raise ValueError("격자 조합이 0개입니다. 범위/스텝을 확인하세요")
+
+
+# ============================================================================
+# 로드셀(STM32) — 백그라운드 스레드로 읽고, 별도 스레드로 ARM 하트비트를 계속 보낸다.
+#   (tvcbench/sources/loadcell.py 의 로직을 이 파일 관행대로 import 없이 복사)
+# ============================================================================
+def parse_status_line(line):
+    """MCU 상태줄(`key=value` 공백 구분, 예: "t=3009477 st=SAFE ... Fx=-838.0 ...")을 파싱.
+
+    값에 괄호 주석이 붙어 있으면(`123(note)`) 그 앞부분만 취하고, '.'이 있으면 float,
+    아니면 int로 파싱을 시도한다. 파싱 실패 값은 문자열로 남긴다(`st=SAFE`).
+    """
+    if not line or not line.startswith("t="):
+        # MCU는 빈 확인응답("OK", "OK SET")이나 자유 텍스트도 보낸다. 상태줄만 샘플로 취급.
+        return None
+    out = {}
+    for part in line.split():
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if "(" in value:
+            value = value.split("(")[0]
+        try:
+            out[key] = float(value) if "." in value else int(value)
+        except ValueError:
+            out[key] = value
+    return out or None
+
+
+class LineFramer:
+    """임의로 쪼개져 들어오는 바이트 스트림을 완전한 텍스트 줄로 만든다.
+
+    USB CDC는 한 줄을 두 번의 read 에 걸쳐 나눠 줄 수 있어, 이 프레이밍이 틀리면
+    배치마다 샘플 하나가 깨진다.
+    """
+    def __init__(self, max_line=LOADCELL_MAX_LINE_BYTES):
+        self._buf = bytearray()
+        self._max_line = max_line
+        self.overlong = 0
+
+    def feed(self, data):
+        """바이트를 추가하고, 그 결과로 완성된 줄들을 리스트로 반환."""
+        self._buf += data
+        lines = []
+        while True:
+            idx = self._buf.find(b"\n")
+            if idx < 0:
+                break
+            raw = bytes(self._buf[:idx])
+            del self._buf[:idx + 1]
+            lines.append(raw.decode("utf-8", errors="replace").strip())
+        if len(self._buf) > self._max_line:
+            # 완전한 한 줄 분량 안에 개행이 없다 — 우리 프로토콜이 아니다. 무한정 버퍼링 대신 버림.
+            self.overlong += 1
+            self._buf.clear()
+        return lines
+
+
+class LoadCellReader:
+    """STM32 로드셀 시리얼을 읽는 백그라운드 스레드 + ARM 하트비트를 보내는 스레드.
+
+    - 읽기 스레드: 상태줄을 파싱해 (t_epoch, fields) 를 스레드 세이프 큐에 쌓는다.
+    - 하트비트 스레드: 'ARM 1000\\r\\n' 을 LOADCELL_ARM_HZ 로 계속 보낸다 — 이걸 안 보내면
+      로드셀이 자체적으로 ~10Hz 로만 상태줄을 낸다(실측으로 확인). 항상 idle(1000) 값만
+      보내며, 어떤 모터도 구동하지 않는다(모터는 Pixhawk 가 별도로 구동).
+    - tare: 비파괴적 — raw 값은 항상 그대로 유지하고, tare 된 값을 별도 필드로 함께 낸다.
+    """
+    def __init__(self, port, baud):
+        self.port = port
+        self.baud = baud
+        self._ser = None
+        self._framer = LineFramer()
+        self._lock = threading.Lock()
+        self._queue = deque()
+        self._stop = threading.Event()
+        self._read_thread = None
+        self._arm_thread = None
+        self.tare = {ch: 0.0 for ch in FT_CHANNELS}
+        self.error = None
+        self.n_received = 0
+        self.n_parse_fail = 0
+        self.last_state = None
+        self.t_first = None
+        self.t_last = None
+
+    def start(self):
+        self._ser = serial.Serial(self.port, self.baud, timeout=LOADCELL_READ_TIMEOUT_S)
+        self._stop.clear()
+        self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._read_thread.start()
+        self._arm_thread = threading.Thread(target=self._arm_loop, daemon=True)
+        self._arm_thread.start()
+
+    def _arm_loop(self):
+        interval = 1.0 / LOADCELL_ARM_HZ
+        cmd = f"ARM {LOADCELL_ARM_VALUE}\r\n".encode()
+        while not self._stop.is_set():
+            try:
+                self._ser.write(cmd)
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    def _read_loop(self):
+        while not self._stop.is_set():
+            try:
+                data = self._ser.read(4096)
+                if not data:
+                    continue
+                for line in self._framer.feed(data):
+                    self._handle_line(line)
+            except Exception as e:
+                self.error = f"{type(e).__name__}: {e}"
+                break
+
+    def _handle_line(self, line):
+        parsed = parse_status_line(line)
+        if parsed is None:
+            if line and not line.startswith(("OK", "!")):
+                self.n_parse_fail += 1
+            return
+        if "st" in parsed:
+            self.last_state = parsed["st"]
+
+        t_epoch = time.time()
+        fields = {"t_stm_ms": parsed.get("t")}
+        for ch in FT_CHANNELS:
+            raw = parsed.get(ch)
+            raw = None if raw is None else float(raw) * MN_TO_N
+            fields[f"{ch}_raw"] = raw
+            fields[ch] = None if raw is None else raw - self.tare[ch]
+        fields["force_count"] = parsed.get("fc")
+        fields["torque_count"] = parsed.get("tc")
+
+        with self._lock:
+            self._queue.append((t_epoch, fields))
+            self.n_received += 1
+            if self.t_first is None:
+                self.t_first = t_epoch
+            self.t_last = t_epoch
+
+    def drain(self):
+        """지금까지 쌓인 샘플을 모두 꺼내고 큐를 비운다."""
+        with self._lock:
+            items = list(self._queue)
+            self._queue.clear()
+        return items
+
+    def wait_armed(self, timeout_s):
+        """MCU 상태줄이 st=ARMED 로 바뀔 때까지 대기(하트비트가 몇 번 왕복해야 반영된다).
+
+        tare 는 이게 True 를 반환한 '뒤'에 시작해야 한다 — ARM 하트비트를 보내기 시작한
+        직후에는 아직 예전 ~10Hz/DISARMED 샘플이 큐에 남아 있을 수 있어, 그 상태로 tare를
+        하면 저rate 구간이 0점 평균에 섞여 들어간다. 타임아웃되면 False(그래도 진행은 가능).
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self.last_state == "ARMED":
+                return True
+            time.sleep(0.02)
+        return False
+
+    def compute_tare(self, seconds):
+        """`seconds`초 동안 raw 샘플을 모아 채널별 평균을 새 tare 오프셋으로 설정한다.
+
+        측정 시작 전, 프로펠러/로드셀이 정지해 있을 때 호출한다. 반환: (offsets|None, n).
+        """
+        if seconds <= 0:
+            return None, 0
+        end = time.time() + seconds
+        totals = {ch: 0.0 for ch in FT_CHANNELS}
+        n = 0
+        while time.time() < end:
+            for _t_epoch, fields in self.drain():
+                if any(fields.get(f"{ch}_raw") is None for ch in FT_CHANNELS):
+                    continue
+                for ch in FT_CHANNELS:
+                    totals[ch] += fields[f"{ch}_raw"]
+                n += 1
+            time.sleep(0.02)
+        if n == 0:
+            return None, 0
+        offsets = {ch: totals[ch] / n for ch in FT_CHANNELS}
+        self.tare = offsets
+        return offsets, n
+
+    def stats(self):
+        with self._lock:
+            n = self.n_received
+        span = (self.t_last - self.t_first) if (self.t_first and self.t_last) else 0.0
+        hz = round(n / span, 1) if span > 0 else 0.0
+        return {"received": n, "parse_fail": self.n_parse_fail, "hz": hz,
+                "state": self.last_state, "error": self.error}
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._ser:
+                self._ser.write(b"DISARM\r\n")
+                time.sleep(0.05)
+        except Exception:
+            pass
+        if self._read_thread:
+            self._read_thread.join(timeout=1.0)
+        if self._arm_thread:
+            self._arm_thread.join(timeout=1.0)
+        try:
+            if self._ser:
+                self._ser.close()
+        except Exception:
+            pass
+
+
+def thrust_n(fields):
+    """추력(N), 위쪽이 양수. 스탠드는 수직 하중을 음수로 읽으므로 -Fz. tare 된 값 사용."""
+    fz = fields.get("Fz")
+    return None if fz is None else -fz
+
+
+def torque_nm(fields):
+    """추력축 기준 반작용 토크(N·m). 부호는 로터 A 기준 - 로터 B."""
+    return fields.get("Tz")
 
 
 # ============================================================================
@@ -444,8 +757,8 @@ class Controller:
         self.last_ping = 0.0
         self.watchdog_enabled = False
         self.start_time = None
-        # 실제로 도달한 수신 주기를 세어 둔다. 요청한 Hz 가 그대로 나온다는 보장이
-        # 없기 때문(PX4 내부 발행 주기·MAV_x_RATE 상한에 걸리면 조용히 낮아진다).
+        # 실제로 도달한 수신 주기를 세어 둔다(스트림별). 요청한 Hz 가 그대로 나온다는 보장이
+        # 없기 때문(PX4 내부 발행 주기·MAV_x_RATE 상한, 로드셀 ARM 상태에 걸리면 조용히 낮아진다).
         self.rx_counts = {}
         self.rx_since = time.time()
         self.status = self._blank_status()
@@ -461,9 +774,12 @@ class Controller:
             "a_us": 0, "b_us": 0,
             "servo_raw": [0] * 8,
             "voltage_v": None, "current_a": None,
+            "thrust_n": None, "torque_nm": None,
+            "loadcell_hz": 0.0, "loadcell_state": None,
             "point_done": 0, "point_total": 0,
             "elapsed_s": 0.0, "eta_s": 0.0,
             "out_path": None,
+            "achieved_rates": {},
         }
 
     def is_running(self):
@@ -519,15 +835,20 @@ class Controller:
 # ============================================================================
 # 측정 핵심 — 값을 유지하며 기록. grid 파일 hold_and_log 를 복사 + 안전 점검/상태갱신 추가
 # ============================================================================
-def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, record, sweep_idx):
-    """(A,B)를 각 목표 µs로 duration초 '유지'하며, record=True면 수신값을 CSV로 기록한다.
+def hold_and_log(ctl, conn, writers, latest, cfg, a_us, b_us, phase, duration, record,
+                  sweep_idx, loadcell=None, enabled=True):
+    """(A,B)를 각 목표 µs로 duration초 '유지'하며, record=True면 수신값을 스트림별 CSV로 기록한다.
 
-    - 명령은 타임아웃이 있으므로 duration 동안 '계속 재전송'해야 값이 유지된다.
+    - 명령은 타임아웃이 있으므로 duration 동안 '계속 재전송'해야 값이 유지된다(enabled=False
+      면 재전송 로직/타이밍은 그대로 돌되 실제 전송만 생략 — no_motor 드라이런).
     - 매 반복마다 ctl.check_abort() 로 STOP/watchdog 을 점검(즉시 중단 가능).
+    - 스트림마다(servo/battery/esc/loadcell) 자기 메시지가 도착했을 때만 그 파일에 한 줄
+      쓴다 — 다른 스트림의 최신값을 끼워 넣어 가짜 rate 를 만들지 않는다.
     - 최신 전압/전류/실측 PWM 은 GUI 표시용으로 ctl.status 에도 갱신한다.
     """
     a_norm = us_to_norm(a_us)
     b_norm = us_to_norm(b_us)
+    prefix = [phase, sweep_idx, a_us, b_us, round(a_norm, 4), round(b_norm, 4)]
     deadline = time.time() + duration
     next_send = 0.0   # 다음 재전송 예정 시각(0이면 즉시)
 
@@ -535,28 +856,22 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
         ctl.check_abort()             # (1) STOP/watchdog 점검 — 걸리면 AbortMeasurement
         now = time.time()
 
-        # (2) 재전송 주기가 되면 두 모터 명령을 다시 보낸다(값 유지)
+        # (2) 재전송 주기가 되면 두 모터 명령을 다시 보낸다(값 유지). no_motor 면 생략.
         if now >= next_send:
-            send_actuator_test(conn, MOTOR_A_FUNC, a_norm, cfg["timeout_s"])
-            send_actuator_test(conn, MOTOR_B_FUNC, b_norm, cfg["timeout_s"])
+            send_actuator_test(conn, MOTOR_A_FUNC, a_norm, cfg["timeout_s"], enabled=enabled)
+            send_actuator_test(conn, MOTOR_B_FUNC, b_norm, cfg["timeout_s"], enabled=enabled)
             next_send = now + 1.0 / cfg["resend_hz"]
 
-        # (3) 들어오는 메시지를 '버퍼가 빌 때까지' 처리한다.
-        # 한 번에 한 개만 꺼내면 요청 주기를 올렸을 때 수신이 생성 속도를 못 따라가
-        # 시리얼 버퍼에 밀리고, t_epoch 이 실제 수신 시각보다 점점 뒤처진다.
-        # 먼저 블로킹으로 하나 기다린 뒤, 남아 있는 것을 논블로킹으로 모두 비운다.
-        # 한 번에 비우는 개수에 상한을 둔다. 상한이 없으면 메시지가 처리 속도보다
-        # 빨리 들어올 때 이 루프에서 빠져나오지 못하고, 그 동안 deadline 과
-        # check_abort()(STOP 버튼·watchdog)를 확인하지 못한다. 모터가 도는 중이므로
-        # 안전상 반드시 주기적으로 바깥 루프로 돌아와야 한다.
+        # (3) MAVLink 수신 메시지를 '버퍼가 빌 때까지' 처리한다. 상한(MAX_DRAIN_PER_LOOP)을
+        # 두어야 메시지가 아무리 빨리 들어와도 주기적으로 deadline/check_abort 로 돌아온다.
         msg = conn.recv_match(blocking=True, timeout=0.05)
         drained = 0
         while msg is not None and drained < MAX_DRAIN_PER_LOOP:
             drained += 1
             mtype = msg.get_type()
+            t_epoch = time.time()
 
             if mtype == "BATTERY_STATUS" and getattr(msg, "id", 0) == 0:
-                # QGC와 동일한 소스(주 배터리 id=0의 BATTERY_STATUS)에서 전압/전류 계산
                 v, c = read_battery(msg)
                 if v is not None:
                     latest["voltage_v"] = v
@@ -564,15 +879,15 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
                     latest["current_a"] = c
                 ctl.set_status(voltage_v=latest["voltage_v"], current_a=latest["current_a"])
                 ctl.note_rx("battery")
-                # 저전압 컷오프 — 리포 보호. 반복 방전 시험에서 셀당 3.3V 아래로
-                # 내려가면 팩이 상한다. 여기서 멈추면 '측정 실패'지만 배터리는 산다.
+                if record:
+                    writers.battery.writerow([t_epoch] + prefix + [latest["voltage_v"], latest["current_a"]])
+                # 저전압 컷오프 — 리포 보호.
                 floor = cfg.get("min_voltage_v") or 0
                 if floor and latest["voltage_v"] and latest["voltage_v"] < floor:
                     raise AbortMeasurement(
                         f"저전압 컷오프: {latest['voltage_v']:.2f}V < {floor:.2f}V")
 
             elif mtype == "ESC_STATUS":
-                # index 는 이 메시지가 담고 있는 첫 ESC 번호(0,4,8...). rpm 은 4개씩 온다.
                 base = int(getattr(msg, "index", 0))
                 for k, rpm in enumerate(getattr(msg, "rpm", [])[:4]):
                     slot = base + k
@@ -580,26 +895,46 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
                         latest["esc_rpm"][slot] = rpm
                 ctl.set_status(esc_rpm=list(latest["esc_rpm"]))
                 ctl.note_rx("esc")
+                if record:
+                    row = [t_epoch] + prefix + ["" if r is None else r for r in latest["esc_rpm"]]
+                    writers.esc.writerow(row)
 
             elif mtype == "SERVO_OUTPUT_RAW":
                 servo = [getattr(msg, f"servo{i}_raw") for i in range(1, 9)]   # 실측 PWM 8채널
                 ctl.set_status(servo_raw=servo)   # GUI 실시간 표시용
                 ctl.note_rx("servo")
                 if record:
-                    # 실제 출력 PWM(µs) + 명령값(µs/정규화) + 최근 전압/전류 + 스윕번호를 한 줄로 기록
-                    row = [
-                        time.time(),        # t_epoch: 라즈베리파이 수신 시각(로드셀 로그와 병합 기준)
-                        msg.time_usec,      # t_fc_us: 픽스호크 측 시각
-                        phase,              # 어느 조합인지 식별 문자열(예: A1000_B1200)
-                        a_us, b_us,         # 명령 µs
-                        round(a_norm, 4), round(b_norm, 4),   # 명령 정규화값
-                    ]
-                    row += servo
-                    row += [latest["voltage_v"], latest["current_a"], sweep_idx]
-                    row += ["" if r is None else r for r in latest["esc_rpm"]]
-                    writer.writerow(row)
+                    row = [t_epoch] + prefix + [msg.time_usec] + servo
+                    writers.servo.writerow(row)
 
             msg = conn.recv_match(blocking=False)   # 남은 것 비우기
+
+        # (4) 로드셀 큐를 비우고, 자기 파일에 자기 rate 로 기록한다.
+        if loadcell is not None:
+            for t_epoch, fields in loadcell.drain():
+                ctl.note_rx("loadcell")
+                thrust = thrust_n(fields)
+                torque = torque_nm(fields)
+                ctl.set_status(thrust_n=thrust, torque_nm=torque,
+                               loadcell_state=fields.get("t_stm_ms") and loadcell.last_state)
+                if record:
+                    row = ([t_epoch] + prefix + [fields["t_stm_ms"]]
+                           + [fields[f"{ch}_raw"] for ch in FT_CHANNELS]
+                           + [fields[ch] for ch in FT_CHANNELS]
+                           + [fields["force_count"], fields["torque_count"]])
+                    writers.loadcell.writerow(row)
+            ctl.set_status(loadcell_hz=loadcell.stats()["hz"])
+
+
+class Writers:
+    """네 스트림 CSV 파일의 csv.writer 를 담아 두는 단순 컨테이너. loadcell 은 로드셀 미설정 시 None."""
+    __slots__ = ("servo", "battery", "esc", "loadcell")
+
+    def __init__(self, servo, battery, esc, loadcell):
+        self.servo = servo
+        self.battery = battery
+        self.esc = esc
+        self.loadcell = loadcell
 
 
 # ============================================================================
@@ -607,7 +942,10 @@ def hold_and_log(ctl, conn, writer, latest, cfg, a_us, b_us, phase, duration, re
 # ============================================================================
 def run_measurement(ctl, cfg):
     conn = None
-    fp = None
+    files = []
+    loadcell = None
+    motor_enabled = not cfg.get("no_motor")
+    out_dir = None
     try:
         # 1) 연결 + 하트비트
         ctl.set_status(state="connecting", message=f"연결 시도: {cfg['device']} @ {cfg['baud']}")
@@ -626,31 +964,76 @@ def run_measurement(ctl, cfg):
         if armed is True:
             raise RuntimeError("지금 '시동(armed)' 상태입니다. 시동 해제 후 실행하세요")
         # armed is None 이면 판단 불가 — 경고만 남기고 진행(모터는 안 돌린 상태)
-        ok, ack_msg = preflight_ack(conn, cfg["timeout_s"])
+        ok, ack_msg = preflight_ack(conn, cfg["timeout_s"], enabled=motor_enabled)
         ctl.set_status(message=f"프리플라이트: {ack_msg}")
         if not ok:
             raise RuntimeError(ack_msg)
 
-        # 3) 격자/조합 준비 + CSV 열기
-        combos = build_combos(cfg)
-        point_total = len(combos) * cfg["repeats"]
+        # 2b) 로드셀 연결 + tare (loadcell_device 가 비어 있으면 완전히 건너뜀 — 선택 하드웨어)
+        if cfg.get("loadcell_device"):
+            ctl.set_status(message=f"로드셀 연결 시도: {cfg['loadcell_device']}")
+            loadcell = LoadCellReader(cfg["loadcell_device"], cfg["loadcell_baud"])
+            try:
+                loadcell.start()
+            except Exception as e:
+                raise RuntimeError(f"로드셀 연결 실패({cfg['loadcell_device']}): {e}")
+            # ARM 하트비트를 보내기 시작한 직후엔 아직 예전 ~10Hz/DISARMED 샘플이 큐에 남아
+            # 있을 수 있다 — st=ARMED 로 전환될 때까지 기다린 뒤(그 사이 쌓인 것은 버리고)
+            # 50Hz 로 안정된 상태에서만 tare 창을 연다.
+            ctl.set_status(message="로드셀 ARM 대기 중 (50Hz 전환 확인)")
+            armed_ok = loadcell.wait_armed(timeout_s=3.0)
+            loadcell.drain()   # ARM 전/전환 중 쌓인 샘플은 버림 — tare 는 여기서부터 깨끗하게
+            if not armed_ok:
+                ctl.set_status(message="경고: 로드셀이 ARMED 상태로 전환 확인 안 됨(그래도 tare 진행)")
+            if cfg.get("tare_s", 0) > 0:
+                ctl.set_status(message=f"로드셀 tare 중 ({cfg['tare_s']}s, ARMED/50Hz 상태)")
+                offsets, n = loadcell.compute_tare(cfg["tare_s"])
+                if offsets is None:
+                    ctl.set_status(message="경고: tare 샘플을 못 받음 — raw=tare 로 진행")
+                else:
+                    ctl.set_status(message=f"tare 완료 (n={n})")
+
+        # 3) 격자/조합 준비 + 출력 디렉터리/CSV 열기
+        orders = build_orders(cfg)
+        point_total = sum(len(o) for o in orders)
         t_start = int(time.time())
-        out_dir = (cfg.get("out_dir") or "").strip()
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{OUT_PREFIX}_{t_start}.csv")
-        ctl.set_status(combo_total=len(combos), sweep_total=cfg["repeats"],
-                       point_total=point_total, out_path=out_path)
+        run_stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime(t_start))
+        base_dir = (cfg.get("out_dir") or "").strip()
+        out_dir = os.path.join(base_dir, f"{describe_grid(cfg)}_{run_stamp}")
+        os.makedirs(out_dir, exist_ok=True)
+        ctl.set_status(combo_total=len(orders[0]) if orders else 0, sweep_total=cfg["repeats"],
+                       point_total=point_total, out_path=out_dir)
         latest = {"voltage_v": None, "current_a": None,
                   "esc_rpm": [None, None, None, None]}
 
-        # 설정값(dwell/repeats/격자 범위 등)은 CSV 안에 남지 않는다 → 옆에 사이드카로 저장.
-        # 나중에 tvctools 가 이 파일을 읽어 런 정보를 복원한다.
-        write_run_sidecar(out_path, cfg, t_start)
+        # 설정값(dwell/repeats/격자 범위 등)은 개별 CSV 안에 남지 않는다 → run.json 에 저장.
+        write_run_json(out_dir, {
+            "cfg": {k: v for k, v in cfg.items() if k not in ("device", "baud")},
+            "t_start_epoch": t_start,
+            "grid": {"a_values": frange_us(cfg["a_start"], cfg["a_end"], cfg["a_step"]),
+                     "b_values": frange_us(cfg["b_start"], cfg["b_end"], cfg["b_step"]),
+                     "n_grid_points": len(orders[0]) if orders else 0,
+                     "repeats": cfg["repeats"], "point_total": point_total},
+            "idle_pre_s": cfg.get("idle_pre_s", 0.0),
+            "idle_post_s": cfg.get("idle_post_s", 0.0),
+            "outcome": "in_progress",
+        })
 
-        fp = open(out_path, "w", newline="")
-        writer = csv.writer(fp)
-        writer.writerow(CSV_HEADER)
+        servo_f = open(os.path.join(out_dir, "servo.csv"), "w", newline="", encoding="utf-8")
+        battery_f = open(os.path.join(out_dir, "battery.csv"), "w", newline="", encoding="utf-8")
+        esc_f = open(os.path.join(out_dir, "esc.csv"), "w", newline="", encoding="utf-8")
+        files.extend([servo_f, battery_f, esc_f])
+        servo_w, battery_w, esc_w = csv.writer(servo_f), csv.writer(battery_f), csv.writer(esc_f)
+        servo_w.writerow(SERVO_COLUMNS)
+        battery_w.writerow(BATTERY_COLUMNS)
+        esc_w.writerow(ESC_COLUMNS)
+        loadcell_w = None
+        if loadcell is not None:
+            loadcell_f = open(os.path.join(out_dir, "loadcell.csv"), "w", newline="", encoding="utf-8")
+            files.append(loadcell_f)
+            loadcell_w = csv.writer(loadcell_f)
+            loadcell_w.writerow(LOADCELL_COLUMNS)
+        writers = Writers(servo_w, battery_w, esc_w, loadcell_w)
 
         # 여기서부터 모터가 움직일 수 있음 → watchdog 켬(브라우저 끊기면 즉시 정지)
         ctl.watchdog_enabled = True
@@ -658,99 +1041,118 @@ def run_measurement(ctl, cfg):
 
         # 4-1) ESC 워밍업(최소값 유지, 기록 안 함) — 계단 시작 전 딱 한 번
         ctl.set_status(state="running", message=f"ESC 워밍업 {cfg['warmup_s']}s (최소값 유지)")
-        hold_and_log(ctl, conn, writer, latest, cfg,
-                     PWM_MIN_US, PWM_MIN_US, "warmup", cfg["warmup_s"], record=False, sweep_idx=0)
+        hold_and_log(ctl, conn, writers, latest, cfg,
+                     PWM_MIN_US, PWM_MIN_US, "warmup", cfg["warmup_s"], record=False,
+                     sweep_idx=0, loadcell=loadcell, enabled=motor_enabled)
 
-        # 4-1b) 무부하 구간을 '기록'한다(phase="idle_pre").
-        # 양 채널 1000µs·전류≈0 이므로 여기 전압이 곧 배터리 실제 잔량(SoC)이다.
-        # 예전에는 이 구간이 기록되지 않아 SoC를 ulog 에서만 얻을 수 있었다.
-        if cfg.get("idle_s", 0) > 0:
-            ctl.set_status(message=f"무부하 기준 전압 측정 {cfg['idle_s']}s")
-            hold_and_log(ctl, conn, writer, latest, cfg,
-                         PWM_MIN_US, PWM_MIN_US, "idle_pre", cfg["idle_s"],
-                         record=True, sweep_idx=0)
+        # 4-1b) 무부하 구간을 '기록'한다(phase="idle_pre"). 양 채널 1000µs·전류≈0 이므로
+        # 여기 전압이 곧 배터리 실제 잔량(SoC)이다.
+        if cfg.get("idle_pre_s", 0) > 0:
+            ctl.set_status(message=f"무부하 기준 전압 측정 {cfg['idle_pre_s']}s")
+            hold_and_log(ctl, conn, writers, latest, cfg,
+                         PWM_MIN_US, PWM_MIN_US, "idle_pre", cfg["idle_pre_s"],
+                         record=True, sweep_idx=0, loadcell=loadcell, enabled=motor_enabled)
 
         # 주기 측정은 여기서부터(연결·워밍업 구간을 빼야 실제 스윕 주기가 나온다)
         ctl.rx_counts = {}
         ctl.rx_since = time.time()
 
-        # 4-2) 계단식 스윕: 격자 전체를 repeats 번 반복. 스텝 사이에 정지/안정화/간격 없음.
+        # 4-2) 계단식 스윕: 격자를 repeats 번(반복마다 독립적인 방문 순서) 반복.
+        # 스텝 사이에 정지/안정화/간격 없음.
         point_done = 0
         last_a, last_b = PWM_MIN_US, PWM_MIN_US
-        for r in range(1, cfg["repeats"] + 1):
-            for ci, (a_us, b_us) in enumerate(combos, start=1):
+        for r, points in enumerate(orders, start=1):
+            for ci, (a_us, b_us) in enumerate(points, start=1):
                 phase = f"A{a_us}_B{b_us}"
                 ctl.set_status(state="running",
-                               message=f"스윕 {r}/{cfg['repeats']} · 조합 {ci}/{len(combos)} "
+                               message=f"스윕 {r}/{cfg['repeats']} · 조합 {ci}/{len(points)} "
                                        f"(A={a_us}µs, B={b_us}µs)",
-                               sweep_idx=r, combo_idx=ci, a_us=a_us, b_us=b_us)
+                               sweep_idx=r, combo_idx=ci, combo_total=len(points),
+                               a_us=a_us, b_us=b_us)
                 # 바로 dwell 동안 유지+기록 → 끝나면 즉시 다음 조합으로(계단 한 칸)
-                hold_and_log(ctl, conn, writer, latest, cfg,
-                             a_us, b_us, phase, cfg["dwell_s"], record=True, sweep_idx=r)
+                hold_and_log(ctl, conn, writers, latest, cfg,
+                             a_us, b_us, phase, cfg["dwell_s"], record=True, sweep_idx=r,
+                             loadcell=loadcell, enabled=motor_enabled)
                 point_done += 1
                 last_a, last_b = a_us, b_us
                 ctl.set_status(point_done=point_done)
-            fp.flush()   # 스윕 한 바퀴 끝날 때마다 디스크에 안전 저장
+            for f in files:
+                f.flush()   # 스윕 한 바퀴 끝날 때마다 디스크에 안전 저장
 
             # 다음 스윕(세트)이 남았으면: 마지막 조합에서 다음 스윕 첫 조합으로 '서서히' 이동.
-            # (한 번에 PWM을 확 줄이지 않도록 — 세트 사이 부드러운 전환으로 새 세트를 시작)
             if r < cfg["repeats"]:
-                first_a, first_b = combos[0]
+                first_a, first_b = orders[r][0]
                 ctl.set_status(message=f"스윕 {r} 종료 → 다음 스윕 준비(서서히 감속)")
                 ctl.check_abort()
                 ramp_to(conn, last_a, last_b, first_a, first_b, cfg["timeout_s"],
-                        log={"ctl": ctl, "writer": writer, "latest": latest,
-                             "cfg": cfg, "sweep_idx": r})
+                        log={"ctl": ctl, "writers": writers, "latest": latest,
+                             "cfg": cfg, "sweep_idx": r, "loadcell": loadcell},
+                        enabled=motor_enabled)
                 last_a, last_b = first_a, first_b
 
         # 4-3) 정상 종료: 마지막 값에서 서서히 정지.
         # 이 구간을 기록해야 추력이 크게 떨어지는 '가장 뚜렷한 에지'가 CSV에 남는다.
         ramp_down(conn, last_a, last_b, cfg["timeout_s"],
-                  log={"ctl": ctl, "writer": writer, "latest": latest,
-                       "cfg": cfg, "sweep_idx": cfg["repeats"]})
+                  log={"ctl": ctl, "writers": writers, "latest": latest,
+                       "cfg": cfg, "sweep_idx": cfg["repeats"], "loadcell": loadcell},
+                  enabled=motor_enabled)
 
         # 4-4) 스윕 후 무부하 전압(phase="idle_post").
-        # idle_pre 와의 차이가 이 런에서 실제로 소모된 배터리 양이다.
-        # 주의: 팩은 부하 직후 수십 초에 걸쳐 회복하므로, 바로 뒤 값은 완전히
-        # 쉰 OCV 보다 조금 낮게 나온다.
-        if cfg.get("idle_s", 0) > 0:
-            ctl.set_status(message=f"무부하 종료 전압 측정 {cfg['idle_s']}s")
-            hold_and_log(ctl, conn, writer, latest, cfg,
-                         PWM_MIN_US, PWM_MIN_US, "idle_post", cfg["idle_s"],
-                         record=True, sweep_idx=0)
+        if cfg.get("idle_post_s", 0) > 0:
+            ctl.set_status(message=f"무부하 종료 전압 측정 {cfg['idle_post_s']}s")
+            hold_and_log(ctl, conn, writers, latest, cfg,
+                         PWM_MIN_US, PWM_MIN_US, "idle_post", cfg["idle_post_s"],
+                         record=True, sweep_idx=0, loadcell=loadcell, enabled=motor_enabled)
 
-        # 실제로 받은 주기를 보고한다. 요청한 Hz 가 그대로 나오는 경우는 오히려 드물다
-        # (PX4 내부 토픽 발행 주기, MAV_x_RATE 대역 상한에 걸리면 조용히 낮아진다).
+        # 실제로 받은 주기를 보고한다. 요청한 Hz 가 그대로 나오는 경우는 오히려 드물다.
         rates = ctl.achieved_rates()
-        want = (cfg.get("servo_hz", 50), cfg.get("bat_hz", 20), cfg.get("esc_hz", 20))
-        got = (rates.get("servo", 0), rates.get("battery", 0), rates.get("esc", 0))
-        rate_msg = ("실측 주기 servo %.0f/%d Hz, battery %.0f/%d Hz, esc %.0f/%d Hz"
-                    % (got[0], want[0], got[1], want[1], got[2], want[2]))
+        want = (cfg.get("servo_hz", 50), cfg.get("bat_hz", 20), cfg.get("esc_hz", 20), LOADCELL_ARM_HZ)
+        got = (rates.get("servo", 0), rates.get("battery", 0), rates.get("esc", 0), rates.get("loadcell", 0))
+        rate_msg = ("실측 주기 servo %.0f/%d Hz, battery %.0f/%d Hz, esc %.0f/%d Hz, loadcell %.0f/%d Hz"
+                    % (got[0], want[0], got[1], want[1], got[2], want[2], got[3], want[3]))
         if got[2] == 0:
             rate_msg += " — ESC 텔레메트리 없음(RPM 미기록)"
         if got[0] < 0.7 * want[0]:
             rate_msg += " — servo 주기가 요청보다 낮음: PX4 발행 주기/MAV_x_RATE 확인"
+        if loadcell is not None and got[3] < 0.7 * want[3]:
+            rate_msg += " — loadcell 주기가 낮음: ARM 하트비트/시리얼 연결 확인"
         ctl.set_status(achieved_rates=rates)
-        ctl.set_status(state="done", message=f"완료 — 저장: {out_path} · {rate_msg}")
+        ctl.set_status(state="done", message=f"완료 — 저장: {out_dir} · {rate_msg}")
+
+        write_run_json(out_dir, {
+            "outcome": "completed",
+            "achieved_rates_hz": rates,
+            "tare_offsets": dict(loadcell.tare) if loadcell is not None else None,
+            "loadcell_stats": loadcell.stats() if loadcell is not None else None,
+        })
 
     except AbortMeasurement as ab:
         # STOP 버튼 또는 watchdog: 사용자/안전 중단
         ctl.set_status(state="stopped", message=f"중단됨: {ab.reason}")
+        if out_dir:
+            write_run_json(out_dir, {"outcome": "aborted", "abort_reason": ab.reason})
     except Exception as e:
         # 그 외 오류(연결 실패, 시동 상태 등)
         ctl.set_status(state="error", message=f"오류: {e}")
+        if out_dir:
+            write_run_json(out_dir, {"outcome": "error", "error": str(e)})
     finally:
-        # 어떤 경우든 마지막엔 반드시 모터 정지 + 파일 저장
+        # 어떤 경우든 마지막엔 반드시 모터 정지 + 로드셀 정지(DISARM) + 파일 저장
         ctl.watchdog_enabled = False
         if conn is not None:
             try:
-                stop_motors_immediate(conn, cfg["timeout_s"])
+                stop_motors_immediate(conn, cfg["timeout_s"], enabled=motor_enabled)
             except Exception:
                 pass
-        if fp is not None:
+        if loadcell is not None:
             try:
-                fp.flush()
-                fp.close()
+                loadcell.stop()
+            except Exception:
+                pass
+        for f in files:
+            try:
+                f.flush()
+                f.close()
             except Exception:
                 pass
 
@@ -845,7 +1247,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="BLDC 2D PWM 계단식 스윕/로거 — HTML GUI 서버")
+    ap = argparse.ArgumentParser(description="BLDC 2D PWM 계단식 스윕/로드셀 로거 — HTML GUI 서버")
     ap.add_argument("--host", default=DEFAULT_HOST,
                     help="바인드 주소 (기본 %(default)s = 라즈베리파이 자기 자신만). "
                          "다른 노트북에서 접속하려면 0.0.0.0")
