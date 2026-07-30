@@ -1,0 +1,370 @@
+{
+  "schema_version": 1,
+  "run_id": "2026-07-28_170508",
+  "created": "2026-07-28T17:12:21+0900",
+  "host": {
+    "hostname": "Odyssey",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.14"
+  },
+  "git_revision": "f9dadb03bae0a98c7dd1c19af2f2009b07ad5598",
+  "streams": {
+    "loadcell": {
+      "columns": [
+        "t_mono",
+        "dev_t",
+        "seg_id",
+        "t_stm_ms",
+        "Fx_raw",
+        "Fy_raw",
+        "Fz_raw",
+        "Tx_raw",
+        "Ty_raw",
+        "Tz_raw",
+        "Fx",
+        "Fy",
+        "Fz",
+        "Tx",
+        "Ty",
+        "Tz",
+        "force_count",
+        "torque_count"
+      ],
+      "rows": 21475
+    },
+    "fc_servo": {
+      "columns": [
+        "t_mono",
+        "dev_t",
+        "seg_id",
+        "t_fc_us",
+        "servo1_raw",
+        "servo2_raw",
+        "servo3_raw",
+        "servo4_raw",
+        "servo5_raw",
+        "servo6_raw",
+        "servo7_raw",
+        "servo8_raw"
+      ],
+      "rows": 8161
+    },
+    "fc_battery": {
+      "columns": [
+        "t_mono",
+        "dev_t",
+        "seg_id",
+        "voltage_v",
+        "current_a",
+        "remaining_pct"
+      ],
+      "rows": 4295
+    },
+    "fc_esc": {
+      "columns": [
+        "t_mono",
+        "dev_t",
+        "seg_id",
+        "t_fc_us",
+        "esc_index",
+        "esc1_rpm",
+        "esc2_rpm",
+        "esc3_rpm",
+        "esc4_rpm",
+        "esc1_voltage",
+        "esc2_voltage",
+        "esc3_voltage",
+        "esc4_voltage",
+        "esc1_current",
+        "esc2_current",
+        "esc3_current",
+        "esc4_current"
+      ],
+      "rows": 0
+    }
+  },
+  "n_segments": 130,
+  "warnings": [],
+  "plan_source": "plans/coax_grid.yaml",
+  "plan_raw": {
+    "schema_version": 1,
+    "grid": {
+      "a": [
+        1300,
+        1600,
+        100
+      ],
+      "b": [
+        1000,
+        2000,
+        100
+      ]
+    },
+    "repeats": 2,
+    "order": {
+      "mode": "blocked_random",
+      "seed": 20260725
+    },
+    "dwell": {
+      "mode": "fixed",
+      "fixed_s": 4.0,
+      "min_s": 2.0,
+      "max_s": 8.0,
+      "target_thrust_sem_n": 0.05
+    },
+    "reference": {
+      "a": 1500,
+      "b": 1500,
+      "every_n_steps": 8
+    },
+    "idle": {
+      "pre_s": 10,
+      "post_s": 10
+    },
+    "tare": {
+      "seconds": 10
+    },
+    "limits": {
+      "min_voltage_v": 9.9,
+      "max_current_a": 60,
+      "max_thrust_n": 40,
+      "max_torque_nm": 1.0,
+      "loadcell_dropout_s": 0.5,
+      "heartbeat_timeout_s": 3.0
+    },
+    "hardware": {
+      "fc": {
+        "device": "/dev/ttyAMA0",
+        "baud": 921600,
+        "servo_hz": 50,
+        "battery_hz": 20,
+        "esc_hz": 20
+      },
+      "loadcell": {
+        "device": "/dev/tvc-loadcell",
+        "baud": 115200
+      }
+    },
+    "meta": {
+      "prop": "",
+      "battery": "",
+      "operator": "",
+      "notes": ""
+    }
+  },
+  "plan": {
+    "schema_version": 1,
+    "grid": {
+      "a": [
+        1300,
+        1600,
+        100
+      ],
+      "b": [
+        1000,
+        2000,
+        100
+      ]
+    },
+    "order": {
+      "mode": "blocked_random",
+      "seed": 20260725
+    },
+    "dwell": {
+      "mode": "fixed",
+      "fixed_s": 4.0,
+      "min_s": 2.0,
+      "max_s": 8.0,
+      "hold_after_settle_s": 2.0,
+      "settle_rate_n_per_s": 0.3,
+      "settle_window_s": 0.5,
+      "target_thrust_sem_n": 0.05
+    },
+    "reference": {
+      "a": 1500,
+      "b": 1500,
+      "every_n_steps": 8
+    },
+    "idle": {
+      "pre_s": 10,
+      "post_s": 10
+    },
+    "tare": {
+      "seconds": 10
+    },
+    "warmup": {
+      "seconds": 3.0
+    },
+    "ramp": {
+      "steps": 8,
+      "seconds": 0.4
+    },
+    "chirp": {
+      "enabled": true,
+      "high_us": 1400,
+      "cycles": 3,
+      "half_period_s": 0.5
+    },
+    "repeats": 2,
+    "limits": {
+      "min_voltage_v": 9.9,
+      "max_current_a": 60,
+      "max_thrust_n": 40,
+      "max_torque_nm": 1.0,
+      "loadcell_dropout_s": 0.5,
+      "heartbeat_timeout_s": 3.0
+    },
+    "hardware": {
+      "fc": {
+        "device": "/dev/ttyAMA0",
+        "baud": 921600,
+        "servo_hz": 50,
+        "battery_hz": 20,
+        "esc_hz": 20,
+        "timeout_s": 1.0,
+        "resend_hz": 5.0
+      },
+      "loadcell": {
+        "device": "/dev/tvc-loadcell",
+        "baud": 115200,
+        "nominal_hz": 50.0
+      }
+    },
+    "meta": {
+      "prop": "",
+      "battery": "",
+      "notes": "",
+      "operator": ""
+    }
+  },
+  "abort": null,
+  "seed": 20260725,
+  "clock": {
+    "anchors": {
+      "pairs": [
+        {
+          "t_mono": 342844.124062,
+          "t_epoch": 1785225908.0268009
+        },
+        {
+          "t_mono": 343277.32812215004,
+          "t_epoch": 1785226341.2301257
+        }
+      ],
+      "drift_ppm": -1.6974800508551269
+    },
+    "device_fits": {
+      "loadcell": {
+        "slope": 1.0000000258938628,
+        "offset": 342744.11880138697,
+        "ppm": 0.025893862831694037,
+        "n": 4329,
+        "span_s": 432.8,
+        "residual_p01_s": -1.6298145055067837e-11,
+        "residual_p50_s": 0.00030292157316580415,
+        "residual_p99_s": 0.0009229213907383409,
+        "floor_width_s": 0.0003029215894639492,
+        "ok": true,
+        "warnings": []
+      },
+      "fc_servo": {
+        "slope": 1.000010950851608,
+        "offset": 342844.0666234166,
+        "ppm": 10.950851607960388,
+        "n": 8226,
+        "span_s": 432.88997499999994,
+        "residual_p01_s": 1.4551915228366852e-11,
+        "residual_p50_s": 0.000316264369757846,
+        "residual_p99_s": 0.0010515720350667834,
+        "floor_width_s": 0.00031626435520593077,
+        "ok": true,
+        "warnings": []
+      },
+      "fc_esc": {
+        "slope": 1.0,
+        "offset": 0.0,
+        "ppm": 0.0,
+        "n": 0,
+        "span_s": 0.0,
+        "residual_p01_s": NaN,
+        "residual_p50_s": NaN,
+        "residual_p99_s": NaN,
+        "floor_width_s": NaN,
+        "ok": false,
+        "warnings": [
+          "fc_esc: too few samples to fit (0)"
+        ]
+      }
+    }
+  },
+  "tare": {
+    "offsets": {
+      "Fx": 8.063221875482226e-05,
+      "Fy": 0.0006086341601039152,
+      "Fz": -9.299805203037792,
+      "Tx": 7.454464682767232e-08,
+      "Ty": -1.0647666824699841e-05,
+      "Tz": 0.0
+    },
+    "n_samples": 500
+  },
+  "achieved_rates": {
+    "fc_servo": 19.0,
+    "fc_battery": 10.0,
+    "fc_esc": 0.0,
+    "loadcell": 50.0
+  },
+  "requested_rates": {
+    "fc_servo": 50,
+    "fc_battery": 20,
+    "fc_esc": 20,
+    "loadcell": 50.0
+  },
+  "source_stats": {
+    "loadcell": {
+      "received": 21658,
+      "overflow": 0,
+      "last_t_mono": 343277.2592761,
+      "error": null,
+      "alive": false,
+      "dropped": 0,
+      "parse_fail": 0,
+      "overlong_lines": 0,
+      "mcu_state": "SAFE",
+      "tare": {
+        "Fx": 8.063221875482226e-05,
+        "Fy": 0.0006086341601039152,
+        "Fz": -9.299805203037792,
+        "Tx": 7.454464682767232e-08,
+        "Ty": -1.0647666824699841e-05,
+        "Tz": 0.0
+      }
+    },
+    "mavlink": {
+      "received": 12563,
+      "overflow": 0,
+      "last_t_mono": 343277.2773387,
+      "error": null,
+      "alive": false,
+      "armed": false,
+      "last_heartbeat_t_mono": 343277.2773387,
+      "ack_accepted": 0,
+      "ack_rejected": 0,
+      "counts": {
+        "fc_servo": 8231,
+        "fc_battery": 4332,
+        "fc_esc": 0
+      },
+      "achieved_rates": {
+        "fc_servo": 19.0,
+        "fc_battery": 10.0,
+        "fc_esc": 0.0
+      },
+      "last_voltage_v": 11.859271407143774,
+      "last_current_a": 4.11274770449336e-28
+    }
+  },
+  "motors_enabled": true,
+  "n_command_sends": 2176,
+  "outcome": "completed"
+}

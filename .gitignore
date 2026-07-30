@@ -1,7 +1,8 @@
 # Raw PX4 logs: ~180 MB and GitHub rejects single files over 100 MB
 # (log_3_2026-7-24-17-11-46.ulg alone is 120 MB). Keep them on the SD card /
 # local disk; the derived tables and plots in out/ are what get committed.
-*.ulg
+
+# *.ulg
 
 # Python
 __pycache__/

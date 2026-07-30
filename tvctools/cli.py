@@ -306,6 +306,32 @@ def cmd_map(args):
 
     runs_root = os.path.join(args.root, OUT_DIR)
     rows = build_map(runs_root)
+
+    # bench/<run_id>/ is a newer, richer acquisition format (per-sample seg_id
+    # across every stream, clock already fitted in manifest.json) that needs no
+    # cross-correlation alignment -- see tvctools/bench.py. Its rows use the
+    # same schema build_map() produces, so they fold straight into the map.
+    from .bench import load_all_bench_runs, find_bench_runs
+    bench_rows = load_all_bench_runs(args.root)
+    if bench_rows:
+        n_runs = len(find_bench_runs(args.root))
+        n_combos = len({(r["a_cmd_us"], r["b_cmd_us"]) for r in bench_rows})
+        print("bench/: %d points from %d run(s), %d unique (A,B) combos"
+              % (len(bench_rows), n_runs, n_combos))
+        rows = rows + bench_rows
+
+    # 2026-07-20 balanced (A=B) points -- the only data reaching PWM 2000/2000.
+    # See tvctools/legacy.py for why voltage is left unrecorded for these.
+    from .legacy import build_legacy_map_rows
+    legacy_map_rows = build_legacy_map_rows(args.root)
+    if legacy_map_rows:
+        print("legacy 2026-07-20: %d balanced (A=B) points, PWM %d-%d "
+              "(no voltage record)"
+              % (len(legacy_map_rows),
+                 min(r["a_cmd_us"] for r in legacy_map_rows),
+                 max(r["a_cmd_us"] for r in legacy_map_rows)))
+        rows = rows + legacy_map_rows
+
     if not rows:
         print("No merged runs found. Run `python -m tvctools build` first.")
         return 1
@@ -356,14 +382,43 @@ def cmd_map(args):
         print("\nwrote %s" % sag_csv)
 
     if not args.no_plots:
-        p = plot_map(rows, os.path.join(_out(args.root), "pwm_thrust_torque_map.png"))
+        # The 2026-07-20 runs are the only ones that reach full throttle, so
+        # they set the top of the thrust curve; without them it is extrapolated.
+        from .legacy import load_legacy_runs
+        legacy = load_legacy_runs(args.root)
+        # Excludes the legacy A=B rows: that chart groups by a_cmd_us, and
+        # since A=B for every one of those points each would be its own
+        # single-point "series" -- the dashed legacy_runs overlay above
+        # already shows this same data as one continuous reference line.
+        curve_rows = [r for r in rows if not r["run"].startswith("legacy_")]
+        p = plot_map(curve_rows, os.path.join(_out(args.root), "pwm_thrust_torque_map.png"),
+                     legacy_runs=legacy)
         if p:
             print("wrote %s" % p)
         p = plot_coax_grid(rows, os.path.join(_out(args.root), "coax_grid.png"))
         if p:
             print("wrote %s" % p)
+        from .plots import plot_pwm_identification
+        p = plot_pwm_identification(
+            rows, os.path.join(_out(args.root), "torque_identification.png"),
+            quantity="torque_Nm", weight_key="torque_sem",
+            zlabel="reaction torque Tz [N.m]", title="Torque identification",
+            signed=True)
+        if p:
+            print("wrote %s" % p)
+        p = plot_pwm_identification(
+            rows, os.path.join(_out(args.root), "thrust_identification.png"),
+            quantity="thrust_N", weight_key="thrust_sem",
+            zlabel="thrust [N]", title="Thrust identification",
+            # A handful of near-idle points read a hair below zero from sensor
+            # noise (tare drift), not a real sign change -- thrust is a
+            # magnitude and should never get the signed (red/blue/zero-plane)
+            # torque styling just because of that noise floor.
+            signed=False)
+        if p:
+            print("wrote %s" % p)
         if sag:
-            p = plot_sag(rows, sag, os.path.join(_out(args.root), "voltage_sag.png"))
+            p = plot_sag(sag, os.path.join(_out(args.root), "voltage_sag.png"))
             if p:
                 print("wrote %s" % p)
         n = 0
@@ -391,6 +446,41 @@ def cmd_ulog(args):
     if args.outdir:
         argv += ["-o", args.outdir]
     return ulog_main(argv)
+
+
+def cmd_interp(args):
+    from .interp import ThrustTorqueMap
+
+    map_csv = os.path.join(_out(args.root), "pwm_thrust_torque_map.csv")
+    if not os.path.exists(map_csv):
+        print("%s not found. Run `python -m tvctools map` first." % map_csv)
+        return 1
+
+    ttmap = ThrustTorqueMap(map_csv, v_ref=args.v_ref)
+    print("%d measured cells, normalized to %.2f V (thrust ~ V^%.2f)"
+          % (len(ttmap.points), ttmap.v_ref, ttmap.exponent))
+
+    if args.grid_out:
+        a_vals = range(args.a_min, args.a_max + 1, args.step)
+        b_vals = range(args.b_min, args.b_max + 1, args.step)
+        rows = ttmap.grid(a_vals, b_vals)
+        from .analyze import write_rows
+        out = write_rows(rows, args.grid_out,
+                         fields=["a_cmd_us", "b_cmd_us", "thrust_N", "torque_Nm",
+                                 "extrapolated", "v_ref"])
+        n_extrap = sum(1 for r in rows if r["extrapolated"])
+        print("wrote %s: %d points, %d extrapolated (outside the measured hull)"
+              % (out, len(rows), n_extrap))
+        return 0
+
+    if args.a is None or args.b is None:
+        print("Pass --a and --b for a single query, or --grid-out for a table.")
+        return 1
+    r = ttmap.query(args.a, args.b)
+    flag = "  (EXTRAPOLATED -- outside the measured grid, treat as a guess)" if r["extrapolated"] else ""
+    print("A=%d B=%d -> thrust=%.4f N  torque=%.5f N*m%s"
+          % (r["a_cmd_us"], r["b_cmd_us"], r["thrust_N"], r["torque_Nm"], flag))
+    return 0
 
 
 def build_parser():
@@ -433,6 +523,18 @@ def build_parser():
     p.add_argument("--segment", action="store_true",
                    help="list the runs inside each log with their no-load voltages")
     p.set_defaults(func=cmd_ulog)
+
+    p = sub.add_parser("interp", help="interpolate thrust/torque into gaps in the (A,B) grid")
+    p.add_argument("--a", type=float, help="rotor A command, us")
+    p.add_argument("--b", type=float, help="rotor B command, us")
+    p.add_argument("--v-ref", type=float, help="reference voltage (default: median)")
+    p.add_argument("--grid-out", help="write a full interpolated grid to this CSV instead")
+    p.add_argument("--a-min", type=int, default=1300)
+    p.add_argument("--a-max", type=int, default=1850)
+    p.add_argument("--b-min", type=int, default=1000)
+    p.add_argument("--b-max", type=int, default=2000)
+    p.add_argument("--step", type=int, default=50)
+    p.set_defaults(func=cmd_interp)
     return ap
 
 

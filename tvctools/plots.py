@@ -8,6 +8,7 @@ means with error bars, on the same axes.
 """
 
 import os
+import re
 
 import numpy as np
 
@@ -17,6 +18,132 @@ def _mpl():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     return plt
+
+
+def fit_pwm_surface(rows, quantity, weight_key=None, degree=2):
+    """
+    Least-squares surface z = f(A_us, B_us) over the raw commanded PWM values.
+
+    degree=1: plane z = c0 + c1*A + c2*B
+    degree=2: adds c3*A^2 + c4*B^2 + c5*A*B
+
+    The quadratic terms matter here, not as decoration: a pure plane fit on
+    this rig's torque data leaves a clear systematic residual bulge above
+    B=1900-2000 (R^2=0.85 -> 0.90 with the quadratic terms added), consistent
+    with reaction torque scaling closer to command^2 than command^1 near full
+    throttle -- the standard result for a fixed-pitch prop, where torque
+    approximately follows RPM^2 and RPM approximately follows command.
+
+    Weighted by 1/sem**2 when a sem column is given, so a tightly-measured
+    point pulls the fit harder than a noisy one.
+
+    Returns (a, b, z, coeffs) with rows lacking the quantity dropped.
+    """
+    pts = [r for r in rows if r.get("a_cmd_us") and r.get("b_cmd_us")
+           and r.get(quantity) is not None]
+    if len(pts) < (6 if degree == 2 else 4):
+        return None
+    a = np.array([r["a_cmd_us"] for r in pts], dtype=float)
+    b = np.array([r["b_cmd_us"] for r in pts], dtype=float)
+    z = np.array([r[quantity] for r in pts], dtype=float)
+
+    cols = [np.ones_like(a), a, b]
+    if degree == 2:
+        cols += [a * a, b * b, a * b]
+    X = np.column_stack(cols)
+
+    if weight_key:
+        sem = np.array([r.get(weight_key) or 1.0 for r in pts], dtype=float)
+        w = 1.0 / np.maximum(sem, 1e-6) ** 2
+        sw = np.sqrt(w)
+        coeffs, *_ = np.linalg.lstsq(X * sw[:, None], z * sw, rcond=None)
+    else:
+        coeffs, *_ = np.linalg.lstsq(X, z, rcond=None)
+    return a, b, z, coeffs
+
+
+def _eval_surface(coeffs, A, B):
+    c = list(coeffs) + [0.0] * (6 - len(coeffs))
+    return c[0] + c[1] * A + c[2] * B + c[3] * A**2 + c[4] * B**2 + c[5] * A * B
+
+
+def plot_pwm_identification(rows, out_path, quantity="torque_Nm",
+                            weight_key="torque_sem", zlabel="torque [N.m]",
+                            title="Torque identification", degree=2,
+                            signed=None):
+    """
+    3D scatter of measured points plus the fitted surface, over (PWM A, PWM B).
+
+    `signed` controls styling and defaults to whether the quantity actually
+    changes sign in this dataset (torque does, at the A=B balance line;
+    thrust does not). The two are styled deliberately differently rather than
+    sharing one look, since otherwise two surfaces of the same general shape
+    are easy to mistake for each other at a glance:
+
+    - signed (torque): points coloured red/blue by sign, a translucent grey
+      z=0 plane marks the balance line, warm-toned surface.
+    - unsigned (thrust): single warm colour throughout, no zero plane -- a
+      magnitude that is never negative doesn't need one.
+    """
+    plt = _mpl()
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers 3d projection)
+
+    got = fit_pwm_surface(rows, quantity, weight_key, degree)
+    if got is None:
+        return None
+    a, b, z, coeffs = got
+    fitted = _eval_surface(coeffs, a, b)
+    resid = z - fitted
+    rmse = float(np.sqrt(np.mean(resid ** 2)))
+    r2 = 1.0 - np.sum(resid ** 2) / max(np.sum((z - z.mean()) ** 2), 1e-12)
+    if signed is None:
+        signed = bool((z < 0).any() and (z > 0).any())
+
+    fig = plt.figure(figsize=(9, 7))
+    ax = fig.add_subplot(111, projection="3d")
+
+    ag = np.linspace(a.min(), a.max(), 20)
+    bg = np.linspace(b.min(), b.max(), 20)
+    AG, BG = np.meshgrid(ag, bg)
+    ZG = _eval_surface(coeffs, AG, BG)
+
+    if signed:
+        surf_color, wire_color = "#e8a15c", "#b5701f"      # warm orange: torque
+        pos, neg = z >= 0, z < 0
+        ax.scatter(a[pos], b[pos], z[pos], color="#c0392b", s=34,
+                   edgecolor="k", linewidth=0.4, depthshade=True, zorder=3,
+                   label="positive (B side leads)")
+        ax.scatter(a[neg], b[neg], z[neg], color="#2e6fa7", s=34,
+                   edgecolor="k", linewidth=0.4, depthshade=True, zorder=3,
+                   label="negative (A side leads)")
+        # Zero plane -- the balance line where the two rotors' reaction
+        # torques cancel is the physically meaningful reference here, not the
+        # data's own min/max.
+        ZERO = np.zeros_like(AG)
+        ax.plot_surface(AG, BG, ZERO, color="0.6", alpha=0.15, linewidth=0,
+                        zorder=0)
+        ax.legend(fontsize=8, loc="upper left")
+    else:
+        surf_color, wire_color = "#7fa8c9", "#3a6ea5"       # cool blue: thrust
+        ax.scatter(a, b, z, color="#1f6fb2", s=32, edgecolor="k",
+                  linewidth=0.4, depthshade=True, zorder=3)
+
+    ax.plot_surface(AG, BG, ZG, color=surf_color, alpha=0.4, linewidth=0,
+                    antialiased=True, zorder=1)
+    ax.plot_wireframe(AG, BG, ZG, color=wire_color, alpha=0.4, linewidth=0.5,
+                      rstride=2, cstride=2, zorder=2)
+
+    ax.set_xlabel("rotor A command [us]")
+    ax.set_ylabel("rotor B command [us]")
+    ax.set_zlabel(zlabel)
+    deg_label = "quadratic" if degree == 2 else "linear"
+    ax.set_title("%s (%s fit)\nR^2=%.3f   RMSE=%.4g   n=%d"
+                 % (title, deg_label, r2, rmse, len(z)), fontsize=10)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    return out_path
 
 
 def plot_run_steps(run_dir, out_path=None):
@@ -81,7 +208,7 @@ def plot_run_steps(run_dir, out_path=None):
 MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
 
-def plot_map(rows, out_path):
+def plot_map(rows, out_path, legacy_runs=None):
     """
     Coaxial map: thrust and torque against rotor B, one curve per rotor A level.
 
@@ -89,6 +216,12 @@ def plot_map(rows, out_path):
     on *both* rotor commands -- so collapsing onto a single PWM axis would hide
     the effect the rig exists to measure. A is therefore a separate series, not
     a colour.
+
+    `legacy_runs` (from tvctools.legacy) overlays the 2026-07-20 balanced
+    sweeps on the thrust panel. Those are the ONLY runs that reach full
+    throttle -- every later session stops at 1850 us -- so without them the top
+    of the curve is extrapolation. They are drawn dashed and grey to keep the
+    distinction obvious: one PWM axis instead of two, and no voltage record.
     """
     plt = _mpl()
     rows = [r for r in rows if r.get("b_cmd_us") and r.get("a_cmd_us")]
@@ -119,6 +252,25 @@ def plot_map(rows, out_path):
 
     series(axes[0], "thrust_N", "thrust [N]", "Thrust vs B, per A level")
     series(axes[1], "torque_Nm", "reaction torque Tz [N.m]", "Torque vs B, per A level")
+
+    if legacy_runs:
+        ax0 = axes[0]
+        for j, run in enumerate(legacy_runs):
+            pts = sorted(run["points"], key=lambda p: p["pwm_us"])
+            ax0.errorbar(
+                [p["pwm_us"] for p in pts], [p["thrust_N"] for p in pts],
+                yerr=[p["thrust_sem"] for p in pts],
+                color="0.35", ls="--", lw=1.0, marker="x", ms=4, capsize=2,
+                alpha=0.85, zorder=1,
+                label="2026-07-20 balanced (A=B)" if j == 0 else None)
+        top = max(p["thrust_N"] for r in legacy_runs for p in r["points"])
+        ax0.axhline(top, color="0.35", ls=":", lw=0.9, alpha=0.7)
+        ax0.annotate("full throttle: %.1f N\n(only 07-20 reaches PWM 2000)" % top,
+                     xy=(2000, top), xytext=(-8, -28),
+                     textcoords="offset points", ha="right", fontsize=7.5,
+                     color="0.25")
+        ax0.set_xlabel("rotor B command [us]   (07-20: both rotors)")
+        ax0.legend(fontsize=7.5, title="rotor A")
 
     ax = axes[2]
     for i, a in enumerate(a_levels):
@@ -192,29 +344,50 @@ def plot_coax_grid(rows, out_path):
     return out_path
 
 
-def plot_sag(rows, sag, out_path):
-    """Thrust vs voltage at each constant-PWM setpoint, with the fitted slope."""
+_SAG_XLABEL = {
+    "noload": "no-load pack voltage [V]  (state of charge)",
+    "loaded": "pack voltage under load [V]",
+}
+
+
+def _run_tag(name):
+    """Drop the A####_B#### prefix -- it is identical for every point here."""
+    parts = name.split("_")
+    tail = [p for p in parts if not re.fullmatch(r"[AB]\d+(-\d+)?", p)]
+    return "_".join(tail) or name
+
+
+def plot_sag(sag, out_path):
+    """Thrust vs voltage at each constant-PWM setpoint, with the fitted slope.
+
+    Points come from the fit itself (`grp["points"]`), not from a re-derivation
+    off the run table: the fit runs on the no-load voltage, and scattering the
+    loaded voltage against a no-load fit puts the line about an IR-drop away
+    from its own data.
+    """
     plt = _mpl()
     if not sag:
         return None
     fig, axes = plt.subplots(1, len(sag), figsize=(6 * len(sag), 5), squeeze=False)
     for ax, grp in zip(axes[0], sag):
-        pts = [r for r in rows
-               if r["a_cmd_us"] == grp["a_cmd_us"] and r["b_cmd_us"] == grp["b_cmd_us"]]
+        pts = grp.get("points") or []
+        if not pts:
+            continue
         v = np.array([p["voltage_v"] for p in pts], dtype=float)
         t = np.array([p["thrust_N"] for p in pts], dtype=float)
         e = np.array([p["thrust_sem"] for p in pts], dtype=float)
         ax.errorbar(v, t, yerr=e, fmt="o", color="#2a78d6", ecolor="#888",
-                    capsize=3, label="run means")
+                    capsize=3, zorder=3, label="run means")
+        slope, intercept = grp["dthrust_dV_N_per_V"], grp["intercept_N"]
         xs = np.linspace(v.min(), v.max(), 50)
-        ax.plot(xs, grp["dthrust_dV_N_per_V"] * xs + grp["intercept_N"],
-                color="#e34948", lw=1.6,
-                label="%.2f N/V  (r=%.3f)" % (grp["dthrust_dV_N_per_V"], grp["r"]))
+        ax.plot(xs, slope * xs + intercept, color="#e34948", lw=1.6, zorder=2,
+                label="fit %.2f N/V  (r=%.3f)" % (slope, grp["r"]))
         for p in pts:
-            ax.annotate(p["run"].split("_")[0], (p["voltage_v"], p["thrust_N"]),
+            ax.annotate(_run_tag(p["run"]), (p["voltage_v"], p["thrust_N"]),
                         textcoords="offset points", xytext=(6, -3), fontsize=7,
                         color="#555")
-        ax.set_xlabel("pack voltage under load [V]")
+        ax.set_xlabel(_SAG_XLABEL.get(grp.get("voltage_basis"),
+                                      "pack voltage [V]"))
         ax.set_ylabel("thrust [N]")
         ax.set_title("Constant command A%d_B%d\nthrust ~ V^%.2f, %.1f%% loss over %.2f V"
                      % (grp["a_cmd_us"], grp["b_cmd_us"], grp["exponent_k"],

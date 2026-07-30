@@ -313,7 +313,11 @@ def build_sag(runs_root, min_runs=MIN_SAG_RUNS, min_span=MIN_SAG_VOLT_SPAN,
                  "voltage_min": round(float(v.min()), 3),
                  "voltage_max": round(float(v.max()), 3),
                  "voltage_span": round(float(np.ptp(v)), 3),
-                 "runs": sorted(p["run"] for p in pts)}
+                 "runs": sorted(p["run"] for p in pts),
+                 # The exact points the fit saw, so plots draw the line over
+                 # the same data instead of re-deriving it on a different
+                 # voltage basis. List-valued, so write_rows skips it.
+                 "points": sorted(pts, key=lambda p: p["voltage_v"])}
 
         if reject is None:
             slope, intercept = np.polyfit(v, t, 1)

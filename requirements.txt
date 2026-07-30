@@ -6,6 +6,7 @@ pyqtgraph>=0.13
 # --- Viewer (plot.py) and analysis ---
 matplotlib>=3.8
 numpy>=1.24
+scipy>=1.10   # tvctools interp: scattered interpolation over the (A,B) grid
 
 # --- Sweep logger (pwm_thrust_map.py) : runs on the Raspberry Pi ---
 pymavlink>=2.4
