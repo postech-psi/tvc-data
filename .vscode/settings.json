@@ -1,3 +1,12 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    // Only attach git repos under this folder. The default (true) also attaches
+    // repos of open editors, which pulled the sibling tvc-testbed clone into
+    // this window's Source Control panel.
+    "git.autoRepositoryDetection": "subFolders",
+    // Belt-and-braces: explicitly ignore the sibling clone by path.
+    "git.ignoredRepositories": [
+        "c:/Users/tae06/CODE/tvc-testbed",
+        "c:\\Users\\tae06\\CODE\\tvc-testbed"
+    ]
 }
