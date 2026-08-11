@@ -1,2 +1,0 @@
-a_cmd_us,b_cmd_us,n_runs,voltage_basis,voltage_min,voltage_max,voltage_span,thrust_min,thrust_max,dthrust_dV_N_per_V,intercept_N,r,exponent_k,pct_thrust_loss
-1850,1850,7,noload,11.245,12.501,1.256,12.655,14.675,1.4562,-3.5162,0.9809,1.261,13.77

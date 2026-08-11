@@ -1,0 +1,7 @@
+# Sweep logger (pwm_thrust_map.py) : runs on the Raspberry Pi 5.
+#
+# These two are the whole dependency set. Everything else the script needs --
+# the web server, CSV writing, threading, JSON -- is standard library.
+
+pymavlink>=2.4    # Pixhawk link: MAV_CMD_ACTUATOR_TEST, SERVO_OUTPUT_RAW, BATTERY_STATUS, ESC_STATUS
+pyserial>=3.5     # STM32 load cell over USB CDC
