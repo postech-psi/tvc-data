@@ -13,6 +13,7 @@ pymavlink>=2.4
 
 # --- Organizer / ulog analysis (tvctools) ---
 pyulog>=1.0
+pandas>=2.0    # steady-state extraction / mapping report over the new per-run CSV folders
 
 # --- Acquisition (tvcbench) : runs on the Raspberry Pi ---
 # Needs pyserial (load cell over USB CDC), pymavlink (Pixhawk) and numpy, all
