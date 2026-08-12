@@ -1,0 +1,10 @@
+# selected servo A
+# IMU HEALTH - keep the rig perfectly still
+# axis 0  gyro bias  +2.341 dps  sd 0.185 BAD   |   accel -0.0189 g  sd 0.0039 OK 
+# axis 1  gyro bias  +1.407 dps  sd 0.181 BAD   |   accel -0.0587 g  sd 0.0041 OK 
+# axis 2  gyro bias  -1.780 dps  sd 0.187 BAD   |   accel -1.0433 g  sd 0.0040 OK 
+# |g| = 1.0451 BAD   throughput 1908 Hz OK   i2c failures 0
+# IMU *** FAIL ***
+!! high gyro sd or |g| off 1.00 usually means the IMU is not rigidly attached, or the rig is moving.
+!! run 't' (tap test) to check mount rigidity.
+# HEALTH_END
