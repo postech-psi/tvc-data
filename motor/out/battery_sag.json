@@ -1,0 +1,13 @@
+{
+  "thrust_sensitivity_n_per_v": 1.8983554222046366,
+  "thrust_v_intercept_n": -6.9648467254220074,
+  "r": 0.7657740456155764,
+  "v_full": 11.038495287258977,
+  "v_per_mah": -0.0003499207384464038,
+  "capacity_to_cutoff_mah": 5825.591521981789,
+  "thrust_start_n": 13.963264351297402,
+  "thrust_end_n": 10.114896327345308,
+  "voltage_start_v": 11.221975735192165,
+  "voltage_end_v": 8.92931972763665,
+  "n_samples": 19311
+}
