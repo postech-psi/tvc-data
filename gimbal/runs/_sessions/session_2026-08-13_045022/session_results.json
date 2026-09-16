@@ -1,0 +1,31 @@
+{
+  "status": "FAIL: step_outer_gimbal 실패로 중단. 이 테스트를 건너뛰고 계속하려면 --keep-going, 특정 테스트만 하려면 --tests 를 쓰세요.",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 996.0,
+      "effective_sample_rate_hz": 1004.0160642570281,
+      "acquisition_jitter_us_p99": 5.0,
+      "g_mag_mean": 0.9996375896534683,
+      "g_mag_sd": 0.00385375495195616,
+      "gyro_bias_dps": [
+        1.9501676829268604,
+        1.1689024390243876,
+        -1.5951676829268266
+      ],
+      "gyro_noise_dps": [
+        0.18677808114683056,
+        0.18139193451856792,
+        0.18876762101543756
+      ],
+      "pass": 1
+    },
+    "step_outer_gimbal": {
+      "pass": 0,
+      "error": "B OUTER capture 실패: samples=21993 expected=22000"
+    }
+  }
+}

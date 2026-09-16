@@ -1,0 +1,23 @@
+{
+  "test": "HEALTH",
+  "i2c_errors": 0,
+  "late_samples": 1,
+  "samples": 4000,
+  "sample_period_us_median": 999.0,
+  "effective_sample_rate_hz": 1001.001001001001,
+  "acquisition_jitter_us_p99": 11.0,
+  "g_mag_mean": 0.9996614372594436,
+  "g_mag_sd": 0.0038479798405925167,
+  "gyro_bias_dps": [
+    1.9448932926829574,
+    1.1718902439024392,
+    -1.5994054878048727
+  ],
+  "gyro_noise_dps": [
+    0.18704198409136485,
+    0.17726543138689788,
+    0.19186724285621723
+  ],
+  "pass": 1,
+  "fail_reasons": []
+}

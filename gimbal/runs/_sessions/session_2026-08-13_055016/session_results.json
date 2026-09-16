@@ -1,0 +1,59 @@
+{
+  "status": "FAIL: mapping_inner_gimbal 실패로 중단. 이 테스트를 건너뛰고 계속하려면 --keep-going, 특정 테스트만 하려면 --tests 를 쓰세요.",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 999.0,
+      "effective_sample_rate_hz": 1001.001001001001,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.9991456600557175,
+      "g_mag_sd": 0.003908058702979233,
+      "gyro_bias_dps": [
+        1.998917682926859,
+        1.2078506097560977,
+        -1.5879268292682962
+      ],
+      "gyro_noise_dps": [
+        0.19176645019763416,
+        0.18310127289523656,
+        0.1889922868096153
+      ],
+      "pass": 1
+    },
+    "mapping_outer_gimbal": {
+      "test": "A",
+      "axis": 0,
+      "gimbal": "outer",
+      "i2c_errors": 3,
+      "late_samples": 441,
+      "samples": 133200,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 11.0,
+      "gravity_axis": "z",
+      "main_axis": "x",
+      "cross_axis": "y",
+      "gain_deg_per_us": 0.06026207930871887,
+      "neutral_us": 1524.4445573987216,
+      "angle_min_deg": -9.07009780947585,
+      "angle_max_deg": 8.229583529741427,
+      "max_abs_angle_deg": 9.07009780947585,
+      "travel_span_deg": 17.29968133921728,
+      "nonlinearity_pct": 10.719658259209325,
+      "hysteresis_mean_deg": 0.31390663892256293,
+      "hysteresis_max_deg": 0.5723868308103399,
+      "cross_axis_span_deg": 0.4521132969354051,
+      "unsettled_points": 5,
+      "point_count": 132,
+      "pass": 1,
+      "recommend_deadband_test": 1
+    },
+    "mapping_inner_gimbal": {
+      "pass": 0,
+      "error": "mapping_inner_gimbal 분석 FAIL"
+    }
+  }
+}

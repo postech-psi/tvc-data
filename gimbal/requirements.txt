@@ -1,0 +1,6 @@
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.1
+pyserial>=3.5
+scipy>=1.11
+

@@ -1,0 +1,81 @@
+{
+  "status": "PASS",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 999.0,
+      "effective_sample_rate_hz": 1001.001001001001,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.9995526334810324,
+      "g_mag_sd": 0.0038622890116224435,
+      "gyro_bias_dps": [
+        1.9344054878049068,
+        1.1615396341463426,
+        -1.598079268292677
+      ],
+      "gyro_noise_dps": [
+        0.189105135561887,
+        0.18306219013681924,
+        0.18787047229145276
+      ],
+      "pass": 1,
+      "fail_reasons": [],
+      "usability": {
+        "verdict": "USABLE",
+        "problems": [],
+        "notes": [
+          "샘플 손실: 0/4000 (0.0000%)",
+          "CRC 오류: 0건",
+          "프레이밍 바이트 손실: 0B / 144000B (0.00000%, budget 72B)",
+          "이벤트: 0/0 (완전)"
+        ],
+        "sample_loss_pct": 0.0,
+        "framing_loss_pct": 0.0,
+        "crc_errors": 0
+      }
+    },
+    "step_inner_gimbal": {
+      "test": "B",
+      "axis": 1,
+      "gimbal": "inner",
+      "main_gyro_axis": "x",
+      "i2c_errors": 0,
+      "late_samples": 2,
+      "samples": 22000,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 1.0,
+      "step_count": 10,
+      "useful_step_count": 8,
+      "direct_onset_ms": 9.96200000000158,
+      "fitted_delay_ms": 30.32868904637497,
+      "rise_10_90_ms": 32.00000000000003,
+      "settling_2pct_ms": 337.9620000000001,
+      "bandwidth_hz": 13.943020249725393,
+      "peak_slew_dps": 402.78405522356366,
+      "tail_rate_rms_dps": 0.2012946851520176,
+      "median_residual_pct": 2.643960178487353,
+      "persistent_ring_detected": 0,
+      "delay_split_warning": 1,
+      "recommend_chirp": 1,
+      "pass": 1,
+      "fail_reasons": [],
+      "usability": {
+        "verdict": "USABLE",
+        "problems": [],
+        "notes": [
+          "샘플 손실: 0/22000 (0.0000%)",
+          "CRC 오류: 0건",
+          "프레이밍 바이트 손실: 0B / 792720B (0.00000%, budget 79B)",
+          "이벤트: 20/20 (완전)"
+        ],
+        "sample_loss_pct": 0.0,
+        "framing_loss_pct": 0.0,
+        "crc_errors": 0
+      }
+    }
+  }
+}

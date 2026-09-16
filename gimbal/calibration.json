@@ -1,0 +1,57 @@
+{
+  "format": "tvc_sid_calibration_v1",
+  "pass": true,
+  "note": "Single-pose uniform-scale calibration at the mounting orientation. raw |g|=1.0429, scale=0.95885 -> corrected |g|=1.0. Tilt angles are scale-invariant, so this only normalises magnitude for the health gate; mapping/step angles come from the raw accel direction with neutral referencing (bias cancels).",
+  "acc_matrix": [
+    [
+      0.9588456454634465,
+      0,
+      0
+    ],
+    [
+      0,
+      0.9588456454634465,
+      0
+    ],
+    [
+      0,
+      0,
+      0.9588456454634465
+    ]
+  ],
+  "acc_offset": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "gyro_rotation": [
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      1
+    ]
+  ],
+  "gyro_bias_dps": [
+    2.112774390243903,
+    1.1832469512195123,
+    -1.6096951219512197
+  ],
+  "gyro_noise_dps": [
+    0.20150247796077045,
+    0.18595084238818355,
+    0.1848154436602851
+  ],
+  "pose_fit_rms_g": 0.0,
+  "corrected_norm_rms_error_g": 0.0,
+  "matrix_condition": 1.0
+}

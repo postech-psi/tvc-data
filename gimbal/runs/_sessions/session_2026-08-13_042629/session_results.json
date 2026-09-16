@@ -1,0 +1,31 @@
+{
+  "status": "FAIL: mapping_inner_gimbal 실패로 중단. 이 테스트를 건너뛰고 계속하려면 --keep-going, 특정 테스트만 하려면 --tests 를 쓰세요.",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 998.0,
+      "effective_sample_rate_hz": 1002.0040080160321,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.9988119165864598,
+      "g_mag_sd": 0.003886456424841803,
+      "gyro_bias_dps": [
+        1.9544817073171,
+        1.162576219512189,
+        -1.601524390243903
+      ],
+      "gyro_noise_dps": [
+        0.18924198480964416,
+        0.1743770349071778,
+        0.1871839493766068
+      ],
+      "pass": 1
+    },
+    "mapping_inner_gimbal": {
+      "pass": 0,
+      "error": "A INNER capture 실패: framing_bytes_discarded=81"
+    }
+  }
+}

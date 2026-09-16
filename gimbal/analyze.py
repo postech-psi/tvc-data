@@ -1,49 +1,6 @@
-#!/usr/bin/env python3
-"""
-TVC gimbal characterization analysis  (PTK 8515MG-D + ICM-20948).
+"""Calibration and automatic analysis for the TVC system-ID project."""
+from __future__ import annotations
 
-    pip install numpy pandas matplotlib scipy
-
-    python analyze.py runs/a_axis0_2026-08-12_1430      # mapping
-    python analyze.py runs/b_axis0_2026-08-12_1445      # step
-    python analyze.py runs/k_axis0_...                  # deadband
-    python analyze.py runs/p_axis0_...                  # repeatability
-    python analyze.py --selftest                        # validate the fitter
-
-The test type is read from meta.json; you do not name it.
-
-NO CONSTANT IS DUPLICATED HERE.  Scale factors, neutral pulse, sample
-rates and axis assignment all come from meta.json, which the firmware
-built by reading its own registers back.  The historical failure mode on
-this rig was a constant edited in the sketch and not in the analysis.
-
-WHAT IS DELIBERATE, AND WHY:
-
-* Health first, fit second.  Every run prints an I2C/timing/settling
-  audit before any model is fitted, and refuses to fit a run that fails
-  it.  A fitted number from a bad trace is worse than no number.
-
-* Timestamps, never nominal dt.  All integration uses the recorded t_us.
-  Assuming 1/1000 s biases the result whenever the loop ran late, and
-  the flags column proves it sometimes does.
-
-* Drift is fitted over the pre-step window AND the settled tail, jointly.
-  Fitting the 200 ms pre-window alone gives a slope standard error of
-  SE = sigma/(sigma_t*sqrt(n)) ~ 1.6 dps/s, about 20x the drift being
-  removed; over a 2.2 s trace that injects degrees of fake ramp.  Both
-  ends together give a >2 s lever arm and SE ~ 0.06 dps/s.
-
-* Dead time comes from a model fit, not from back-extrapolating a chord.
-  For a first-order response the 20-80% chord extrapolates to -0.24*tau
-  relative to true onset -- biased by the very time constant being
-  measured (12 ms of error on a 14 ms quantity when tau = 50 ms).  A
-  6-sigma threshold crossing is computed too, but only as an independent
-  cross-check that must agree, never as the primary number.
-
-* Smoothing (zero-phase filtfilt) is used ONLY for peak/overshoot.
-  Never for edge timing -- a causal filter shifts edges, and even
-  filtfilt distorts a sharp onset.
-"""
 import argparse
 import json
 import sys
@@ -51,833 +8,935 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from scipy import signal
 from scipy.optimize import curve_fit
 
-RAD2DEG = 57.29577951308232
+# =============================================================================
+# USER ANALYSIS PARAMETERS
+# Edit acceptance criteria and analysis windows only in this block.
+# run_experiment.py saves a copy of this file in every session directory.
+# =============================================================================
+
+# Common data-quality criteria
+LATE_SAMPLE_MAX_FRACTION = 0.01
+MIN_ALLOWED_LATE_SAMPLES = 1
+# Single-event I2C read glitches are physically expected over long captures (a
+# multi-minute run reads the IMU hundreds of thousands of times). Allow a tiny
+# rate so one stray error does not discard an otherwise complete, CRC-clean run;
+# a systematic wiring fault produces orders of magnitude more and still FAILs.
+I2C_ERROR_MAX_FRACTION = 0.0001   # 0.01% of samples
+MIN_ALLOWED_I2C_ERRORS = 2
+
+# Experiment 1: static-health acceptance
+# (Accelerometer calibration is produced separately by calibrate.py, a
+# single-pose uniform-scale fit; see calibration.json "note".)
+GYRO_NOISE_MAX_DPS = 0.5
+# Standard tolerance. calibration.json is a single-pose uniform-scale calibration
+# taken at the actual mounting orientation, so corrected |g| = 1.0 at the operating
+# point and this strict gate passes honestly (no widening needed). This trims the
+# accel scale so the LOCAL gain near the operating orientation is accurate -- which
+# is exactly what the mapping/step relative measurements use. See calibration.json
+# "note" for the rationale and limits.
+HEALTH_GRAVITY_MAG_TOLERANCE_G = 0.02
+HEALTH_GRAVITY_MAG_SD_MAX_G = 0.01
+
+# Experiment 2: PWM-to-angle mapping
+MAPPING_SETTLED_WINDOW_FRACTION = 0.50
+MAPPING_CREEP_MAX_DPS = 0.5
+MAPPING_LINEAR_FIT_QUANTILES = (0.20, 0.80)
+MAPPING_MIN_TRAVEL_SPAN_DEG = 2.0
+# Upper sanity bound: no physical gimbal sweeps this far, so a span above it means
+# the tilt series is corrupt (branch-cut wrap, wrong axis, fixture moved) and the
+# run must not be reported as PASS.
+MAPPING_MAX_TRAVEL_SPAN_DEG = 90.0
+MAPPING_MAX_UNSETTLED_FRACTION = 0.10
+HYSTERESIS_DEADBAND_TEST_TRIGGER_DEG = 0.5
+
+# Experiment 3: step response metrics and acceptance
+RATE_DETREND_TAIL_FRACTION = 0.35
+RISE_LOW_FRACTION = 0.10
+RISE_HIGH_FRACTION = 0.90
+SETTLING_BAND_FRACTION = 0.02
+METRIC_TAIL_WINDOW_S = 0.50
+FINAL_ANGLE_WINDOW_S = 0.15
+SETTLED_SLOPE_WINDOW_S = 0.15
+STEP_SETTLED_CREEP_MAX_DPS = 0.5
+STEP_MIN_MOVE_DEG = 0.5
+STEP_MAX_MODEL_RESIDUAL_PCT = 10.0
+STEP_MIN_USEFUL_COUNT = 6
+DIRECT_ONSET_SIGMA = 6.0
+RING_MIN_SAMPLES = 32
+RING_NOISE_MULTIPLIER = 2.0
+RING_MIN_HZ = 2.0
+RING_MAX_HZ = 200.0
+RING_NYQUIST_FRACTION = 0.45
+CHIRP_RESIDUAL_TRIGGER_PCT = 5.0
+CHIRP_DELAY_GAP_TRIGGER_MS = 5.0
+SECOND_ORDER_OVERSHOOT_TRIGGER = 0.05
+
+# Step-model fitting search settings
+FIRST_ORDER_INITIAL_DELAY_S = 0.012
+FIRST_ORDER_INITIAL_TAU_S = 0.050
+MODEL_AMPLITUDE_BOUND_FACTOR = 3.0
+MODEL_AMPLITUDE_BOUND_MARGIN_DEG = 1.0
+MODEL_DELAY_MAX_S = 0.30
+FIRST_ORDER_TAU_MIN_S = 0.001
+FIRST_ORDER_TAU_MAX_S = 2.0
+FIRST_ORDER_MAX_EVALUATIONS = 20000
+SECOND_ORDER_INITIAL_WN_RAD_S = 50.0
+SECOND_ORDER_INITIAL_ZETA = 0.4
+SECOND_ORDER_WN_MIN_RAD_S = 1.0
+SECOND_ORDER_WN_MAX_RAD_S = 500.0
+SECOND_ORDER_ZETA_MIN = 0.01
+SECOND_ORDER_ZETA_MAX = 0.999
+SECOND_ORDER_MAX_EVALUATIONS = 30000
+SMOOTH_MAX_WINDOW_SAMPLES = 51
+SMOOTH_POLY_ORDER = 3
+
+# Experiment 4: chirp (frequency response) acceptance
+CHIRP_WELCH_SEGMENT_S = 2.0
+CHIRP_MIN_COHERENCE = 0.8          # band with coherence >= this is trusted
+CHIRP_GAIN_REF_MAX_HZ = 2.0        # low-frequency gain reference band
+CHIRP_MIN_TRUSTED_SPAN_HZ = 3.0    # need at least this much trusted band to pass
+
+# Experiment 5: deadband / backlash acceptance
+DEADBAND_MOTION_THRESHOLD_DEG = 0.10   # angle change counted as real motion
+DEADBAND_MAX_ACCEPTABLE_US = 40.0      # informational: flag if wider
+# Microseconds are gain-blind: 30 us is harmless at 0.01 deg/us and 1.5 deg of dead
+# zone at 0.05 deg/us. What the controller actually feels is the angle, so flag on
+# degrees too, matching the mapping-side HYSTERESIS_DEADBAND_TEST_TRIGGER_DEG.
+DEADBAND_MAX_ACCEPTABLE_DEG = 0.5
+
+# Experiment 6: joint 2D PWM_A x PWM_B -> angle grid map
+GRID_CREEP_MAX_DPS = 0.5
+GRID_MIN_CELLS = 16
+GRID_MIN_TRAVEL_SPAN_DEG = 2.0
+GRID_MAX_TRAVEL_SPAN_DEG = 90.0
+
+# =============================================================================
+# INTERNAL CONSTANTS -- normally do not edit below this line.
+# =============================================================================
 
 FLAG_I2C = 0x01
 FLAG_LATE = 0x02
+GIMBAL_NAMES = {0: "outer", 1: "inner", -1: "none"}
 
 
-# ===================================================================
-# loading
-# ===================================================================
-def axis_of(meta):
-    """Which servo this run drove, as a plain int.
-
-    The capture parser turns repeated '#META axis=0' lines into a LIST
-    ([0, 0]), so `meta.get('axis', 0) == 0` is False even for axis 0 --
-    which silently made the mapping read the wrong pulse column (cmd_b,
-    constant, so the fit saw 'angle vs a constant' and returned a zero
-    gain).  Normalise it once, here, and use axis_of(meta) everywhere."""
-    a = meta.get("axis", 0)
-    if isinstance(a, (list, tuple)):
-        a = a[0] if a else 0
-    return int(a)
+def last_value(value):
+    return value[-1] if isinstance(value, list) and value else value
 
 
-def load(rundir):
-    rundir = Path(rundir)
-    meta = json.loads((rundir / "meta.json").read_text())
-    df = pd.read_csv(rundir / "raw.csv", comment="#")
-    df.columns = [c.strip() for c in df.columns]
-    for c in ("t_us", "seq", "axis", "cmd_a", "cmd_b",
-              "ax", "ay", "az", "gx", "gy", "gz", "flags"):
-        if c in df:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+def load_run(run_dir: Path | str) -> tuple[pd.DataFrame, dict]:
+    run_dir = Path(run_dir)
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    df = pd.read_csv(run_dir / "raw.csv")
+    # Read pre-v2 captures too, but normalize all downstream code to the
+    # physical outer/inner naming.
+    if "axis" not in df and "motor" in df:
+        df = df.rename(columns={"motor": "axis"})
+    if "cmd_outer" not in df and "cmd0" in df:
+        df = df.rename(columns={"cmd0": "cmd_outer"})
+    if "cmd_inner" not in df and "cmd1" in df:
+        df = df.rename(columns={"cmd1": "cmd_inner"})
+    if "axis" not in meta and "motor" in meta:
+        meta["axis"] = meta["motor"]
+    axis_value = int(last_value(meta.get("axis", -1)))
+    if "gimbal" not in meta:
+        meta["gimbal"] = GIMBAL_NAMES.get(axis_value, "none")
+    if "gimbal" not in df:
+        df["gimbal"] = df["axis"].map(GIMBAL_NAMES).fillna("none")
+    numeric = ["t_us", "seq", "axis", "cmd_outer", "cmd_inner",
+               "ax", "ay", "az",
+               "gx", "gy", "gz", "flags", "packet_seq", "jitter_us"]
+    for col in numeric:
+        if col in df:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     df["t"] = df["t_us"] * 1e-6
     return df, meta
 
 
-def scaled(df, meta):
-    """Raw LSB -> g and dps, using the manifest's factors."""
-    ag = float(meta["acc_lsb_per_g"])
-    gg = float(meta["gyro_lsb_per_dps"])
-    out = df.copy()
-    for c in "xyz":
-        out["a" + c] = df["a" + c] / ag
-        out["g" + c] = df["g" + c] / gg
+def sample_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df["rec"] == "S"].copy()
+
+
+def event_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df["rec"] == "E"].copy()
+
+
+def flag_counts(samples: pd.DataFrame) -> dict:
+    flags = samples["flags"].fillna(0).astype(int)
+    result = {
+        "i2c_errors": int(((flags & FLAG_I2C) != 0).sum()),
+        "late_samples": int(((flags & FLAG_LATE) != 0).sum()),
+        "samples": int(len(samples)),
+    }
+    if len(samples) > 1:
+        periods = np.diff(samples["t_us"].to_numpy(float))
+        periods = periods[(periods > 0) & (periods <= 5000)]
+        if len(periods):
+            result["sample_period_us_median"] = float(np.median(periods))
+            result["effective_sample_rate_hz"] = float(1e6 / np.median(periods))
+    if "jitter_us" in samples:
+        jitter = samples["jitter_us"].dropna().to_numpy(float)
+        if len(jitter):
+            result["acquisition_jitter_us_p99"] = float(
+                np.quantile(np.abs(jitter), 0.99))
+    return result
+
+
+def pass_and_reasons(checks: list[tuple[str, bool]]) -> tuple[bool, list[str]]:
+    """checks: list of (failure_description, passed). Returns (all_passed,
+    list of failure_description for the checks that did NOT pass), so callers
+    always know exactly which gate(s) tripped instead of a blind pass=False."""
+    reasons = [label for label, ok in checks if not ok]
+    return not reasons, reasons
+
+
+def save_json(path: Path, value: dict) -> None:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2,
+                               allow_nan=False), encoding="utf-8")
+
+
+def finite_json(value):
+    if isinstance(value, dict):
+        return {k: finite_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [finite_json(v) for v in value]
+    if isinstance(value, (np.floating, float)):
+        return None if not np.isfinite(value) else float(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return value
+
+
+def load_calibration(path: Path | str) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def corrected_acc(samples: pd.DataFrame, meta: dict, calibration: dict) -> np.ndarray:
+    scale = float(last_value(meta["acc_lsb_per_g"]))
+    raw = samples[["ax", "ay", "az"]].to_numpy(float) / scale
+    matrix = np.asarray(calibration["acc_matrix"], float)
+    offset = np.asarray(calibration["acc_offset"], float)
+    return raw @ matrix.T + offset
+
+
+def corrected_gyro(samples: pd.DataFrame, meta: dict, calibration: dict) -> np.ndarray:
+    scale = float(last_value(meta["gyro_lsb_per_dps"]))
+    raw = samples[["gx", "gy", "gz"]].to_numpy(float) / scale
+    rotation = np.asarray(calibration["gyro_rotation"], float)
+    return raw @ rotation.T
+
+
+def analyze_health(run_dir: Path, calibration_path: Path) -> dict:
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df)
+    acc = corrected_acc(s, meta, cal)
+    gyro = corrected_gyro(s, meta, cal)
+    counts = flag_counts(s)
+    norms = np.linalg.norm(acc, axis=1)
+    result = {
+        "test": "HEALTH",
+        **counts,
+        "g_mag_mean": float(norms.mean()),
+        "g_mag_sd": float(norms.std()),
+        "gyro_bias_dps": gyro.mean(axis=0).tolist(),
+        "gyro_noise_dps": gyro.std(axis=0).tolist(),
+    }
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f}",
+         counts["late_samples"] <= late_limit),
+        (f"g_mag_mean {result['g_mag_mean']:.4f}가 1.0±{HEALTH_GRAVITY_MAG_TOLERANCE_G} 범위 밖",
+         abs(result["g_mag_mean"] - 1.0) <= HEALTH_GRAVITY_MAG_TOLERANCE_G),
+        (f"g_mag_sd {result['g_mag_sd']:.4f} > 허용 {HEALTH_GRAVITY_MAG_SD_MAX_G}",
+         result["g_mag_sd"] <= HEALTH_GRAVITY_MAG_SD_MAX_G),
+        (f"gyro_noise_dps max {max(result['gyro_noise_dps']):.3f} >= 허용 {GYRO_NOISE_MAX_DPS}",
+         max(result["gyro_noise_dps"]) < GYRO_NOISE_MAX_DPS),
+    ])
+    save_json(run_dir / "analysis.json", finite_json(result))
+    return result
+
+
+def referenced_tilt(main, gravity, ref_main, ref_gravity):
+    # No np.unwrap: gimbal tilt stays well within +/-90 deg so arctan2 never wraps,
+    # and skipping unwrap prevents a dropped-sample gap from injecting a spurious
+    # 360 deg jump into the rest of the series (which corrupted absolute angle/
+    # neutral when a long capture lost a few samples).
+    #
+    # The difference of two arctan2 results still needs folding into (-180, 180]:
+    # when the reference orientation sits near the +/-pi branch cut (gravity
+    # negative on the chosen axis, i.e. the fixture mounted inverted), the two
+    # terms land on opposite sides of the cut and a ~-7 deg tilt comes out as
+    # ~+353 deg. The fold is per-sample and stateless, so unlike np.unwrap it
+    # cannot propagate a dropped-sample glitch into the rest of the series.
+    angle = np.arctan2(main, gravity)
+    delta = np.degrees(angle - np.arctan2(ref_main, ref_gravity))
+    return (delta + 180.0) % 360.0 - 180.0
+
+
+def settled_half(group: pd.DataFrame) -> pd.DataFrame:
+    if len(group) < 4:
+        return group
+    cutoff = group["t"].iloc[0] + MAPPING_SETTLED_WINDOW_FRACTION * (
+        group["t"].iloc[-1] - group["t"].iloc[0])
+    return group[group["t"] >= cutoff]
+
+
+def analyze_mapping(run_dir: Path, calibration_path: Path) -> dict:
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df).reset_index(drop=True)
+    acc = corrected_acc(s, meta, cal)
+    for i, name in enumerate("xyz"):
+        s["a" + name] = acc[:, i]
+    counts = flag_counts(s)
+    axis = int(last_value(meta["axis"]))
+    gimbal = str(last_value(meta.get("gimbal", GIMBAL_NAMES[axis])))
+    pulse_col = "cmd_outer" if axis == 0 else "cmd_inner"
+    zero = s[s["phase"] == "zero"]
+    sweep = s[s["phase"].isin(["up", "dn", "up2", "dn2"])]
+    if zero.empty or sweep.empty:
+        raise ValueError("mapping run has no zero/sweep samples")
+    gravity = int(np.argmax(np.abs(zero[["ax", "ay", "az"]].mean()).to_numpy()))
+    candidates = [i for i in range(3) if i != gravity]
+    ref = zero[["ax", "ay", "az"]].mean().to_numpy()
+
+    # Select the main sensing axis by the largest SETTLED tilt span, not by raw accel
+    # peak-to-peak over the whole sweep. The fast servo transitions between dwell
+    # points induce large transient swings on coupled axes (raw ptp can reach several
+    # g), which otherwise fool a peak-to-peak heuristic into picking a transient-
+    # dominated axis over the axis that actually carries the steady gimbal tilt.
+    def _settled_tilt_span(i: int) -> float:
+        s["_sel_theta"] = referenced_tilt(
+            acc[:, i], acc[:, gravity], ref[i], ref[gravity])
+        means = [s.loc[settled_half(g).index, "_sel_theta"].mean()
+                 for _, g in s[s["phase"].isin(["up", "dn", "up2", "dn2"])]
+                 .groupby(["phase", "seq"])]
+        s.drop(columns="_sel_theta", inplace=True)
+        return float(np.nanmax(means) - np.nanmin(means)) if means else 0.0
+
+    main = max(candidates, key=_settled_tilt_span)
+    cross = next(i for i in range(3) if i not in {gravity, main})
+    s["theta"] = referenced_tilt(acc[:, main], acc[:, gravity], ref[main], ref[gravity])
+    s["theta_cross"] = referenced_tilt(acc[:, cross], acc[:, gravity],
+                                        ref[cross], ref[gravity])
+
+    rows = []
+    phases = ["up", "dn", "up2", "dn2"]
+    for (phase, seq), group in s[s["phase"].isin(phases)].groupby(["phase", "seq"]):
+        w = settled_half(group)
+        t = w["t"].to_numpy()
+        theta = w["theta"].to_numpy()
+        creep = np.polyfit(t - t[0], theta, 1)[0] if len(w) > 3 else np.nan
+        rows.append({
+            "phase": phase, "seq": int(seq), "pulse_us": int(w[pulse_col].iloc[0]),
+            "theta_deg": float(theta.mean()), "theta_sd_deg": float(theta.std()),
+            "cross_deg": float(w["theta_cross"].mean()),
+            "creep_dps": float(creep),
+            "settled": bool(abs(creep) < MAPPING_CREEP_MAX_DPS),
+        })
+    points = pd.DataFrame(rows).sort_values(["phase", "pulse_us"])
+    lo, hi = points["pulse_us"].quantile(MAPPING_LINEAR_FIT_QUANTILES)
+    middle = points[(points["pulse_us"] >= lo) & (points["pulse_us"] <= hi)]
+    gain, intercept = np.polyfit(middle["pulse_us"], middle["theta_deg"], 1)
+    residual = points["theta_deg"] - (gain * points["pulse_us"] + intercept)
+    up = points[points["phase"].isin(["up", "up2"])].groupby("pulse_us")["theta_deg"].mean()
+    down = points[points["phase"].isin(["dn", "dn2"])].groupby("pulse_us")["theta_deg"].mean()
+    common = up.index.intersection(down.index)
+    hysteresis = down[common] - up[common]
+    lut = pd.DataFrame({"pulse_us": common,
+                        "theta_deg": (up[common] + down[common]) / 2,
+                        "theta_up_deg": up[common], "theta_down_deg": down[common]})
+    angle_min = float(points["theta_deg"].min())
+    angle_max = float(points["theta_deg"].max())
+    span = angle_max - angle_min
+    result = {
+        "test": "A", "axis": axis, "gimbal": gimbal, **counts,
+        "gravity_axis": "xyz"[gravity], "main_axis": "xyz"[main],
+        "cross_axis": "xyz"[cross], "gain_deg_per_us": float(gain),
+        "neutral_us": float(-intercept / gain),
+        "angle_min_deg": angle_min, "angle_max_deg": angle_max,
+        "max_abs_angle_deg": max(abs(angle_min), abs(angle_max)),
+        "travel_span_deg": span,
+        "nonlinearity_pct": float(100 * residual.abs().max() / span),
+        "hysteresis_mean_deg": float(hysteresis.abs().mean()),
+        "hysteresis_max_deg": float(hysteresis.abs().max()),
+        "cross_axis_span_deg": float(points["cross_deg"].max() - points["cross_deg"].min()),
+        "unsettled_points": int((~points["settled"]).sum()),
+        "point_count": len(points),
+    }
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    unsettled_limit = max(1, MAPPING_MAX_UNSETTLED_FRACTION * len(points))
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f} "
+         f"(전체 {len(s)}개 중 {LATE_SAMPLE_MAX_FRACTION*100:.1f}%, "
+         f"jitter_p99={counts.get('acquisition_jitter_us_p99', float('nan')):.0f}us)",
+         counts["late_samples"] <= late_limit),
+        (f"travel_span_deg {span:.2f}가 허용범위 "
+         f"({MAPPING_MIN_TRAVEL_SPAN_DEG}, {MAPPING_MAX_TRAVEL_SPAN_DEG}) 밖",
+         MAPPING_MIN_TRAVEL_SPAN_DEG < span < MAPPING_MAX_TRAVEL_SPAN_DEG),
+        (f"unsettled_points {result['unsettled_points']} > 허용 {unsettled_limit:.1f} "
+         f"(전체 {len(points)}점 중 {MAPPING_MAX_UNSETTLED_FRACTION*100:.0f}%)",
+         result["unsettled_points"] <= unsettled_limit),
+    ])
+    result["recommend_deadband_test"] = (
+        result["hysteresis_max_deg"] > HYSTERESIS_DEADBAND_TEST_TRIGGER_DEG)
+    points.to_csv(run_dir / "mapping_points.csv", index=False)
+    lut.to_csv(run_dir / "lut.csv", index=False)
+    save_json(run_dir / "analysis.json", finite_json(result))
+    # Plots are produced separately by plot.py mapping.
+    return result
+
+
+def first_order(t, amplitude, delay, tau):
+    out = np.zeros_like(t)
+    active = t > delay
+    out[active] = amplitude * (1.0 - np.exp(-(t[active] - delay) / tau))
     return out
 
 
-def samples(df):
-    return df[df["rec"] == "S"]
+def second_order(t, amplitude, delay, wn, zeta):
+    out = np.zeros_like(t)
+    active = t > delay
+    tt = t[active] - delay
+    zeta = np.clip(zeta, 1e-3, 0.999)
+    wd = wn * np.sqrt(1.0 - zeta * zeta)
+    out[active] = amplitude * (1.0 - np.exp(-zeta * wn * tt) *
+        (np.cos(wd * tt) + zeta / np.sqrt(1.0 - zeta * zeta) * np.sin(wd * tt)))
+    return out
 
 
-def events(df):
-    return df[df["rec"] == "E"]
+def detrend_rate(t, rate, command_time):
+    tail_start = t[-1] - RATE_DETREND_TAIL_FRACTION * (t[-1] - command_time)
+    mask = (t < command_time) | (t >= tail_start)
+    fit = np.polyfit(t[mask], rate[mask], 1)
+    return rate - np.polyval(fit, t)
 
 
-# ===================================================================
-# health audit
-# ===================================================================
-def health(df, meta, expect_hz=None):
-    """Returns (ok, report dict).  Printed before anything is fitted."""
-    s = samples(df)
-    n = len(s)
-    rep = {}
-    print("\n=== HEALTH ===")
-    print(f"  samples            {n}")
-
-    flags = s["flags"].fillna(0).astype(int)
-    n_i2c = int((flags & FLAG_I2C).astype(bool).sum())
-    n_late = int((flags & FLAG_LATE).astype(bool).sum())
-    rep["n_i2c_err"], rep["n_late"] = n_i2c, n_late
-    print(f"  I2C read failures  {n_i2c}  ({100*n_i2c/max(n,1):.2f}%)")
-    print(f"  late samples       {n_late}  ({100*n_late/max(n,1):.2f}%)")
-
-    dt = np.diff(s["t"].to_numpy())
-    dt = dt[(dt > 0) & (dt < 1.0)]
-    if len(dt):
-        med = np.median(dt)
-        rep["dt_median_ms"] = med * 1e3
-        rep["dt_jitter_ms"] = float(np.std(dt) * 1e3)
-        rep["rate_hz"] = 1.0 / med
-        print(f"  median dt          {med*1e3:.3f} ms  -> {1/med:8.1f} Hz")
-        print(f"  dt jitter (sd)     {np.std(dt)*1e3:.3f} ms")
-        print(f"  dt p99             {np.percentile(dt,99)*1e3:.3f} ms")
-        if expect_hz:
-            err = abs(1 / med - expect_hz) / expect_hz
-            print(f"  expected rate      {expect_hz} Hz  "
-                  f"({'OK' if err < 0.05 else 'OFF by %.1f%%' % (100*err)})")
-
-    sc = scaled(s, meta)
-    gmag = np.sqrt(sc["ax"]**2 + sc["ay"]**2 + sc["az"]**2)
-    rep["g_mag_mean"] = float(gmag.mean())
-    print(f"  |g| mean           {gmag.mean():.4f}  sd {gmag.std():.4f}"
-          f"  {'OK' if abs(gmag.mean()-1) < 0.05 else 'BAD -- check scale/mount'}")
-
-    ok = True
-    if n == 0:
-        print("  !! no samples"); ok = False
-    if n_i2c > 0.01 * max(n, 1):
-        print("  !! >1% I2C failures -- data is not trustworthy"); ok = False
-    if n_late > 0.05 * max(n, 1):
-        print("  !! >5% late samples -- timing did not hold"); ok = False
-    if abs(gmag.mean() - 1) > 0.10:
-        print("  !! |g| far from 1 -- wrong scale factor or a moving rig"); ok = False
-    print(f"  VERDICT            {'PASS' if ok else 'FAIL'}")
-    return ok, rep
+def model_bandwidth(kind: str, parameters: dict) -> float:
+    if kind == "1st":
+        return 1.0 / (2.0 * np.pi * parameters["tau"])
+    zeta, wn = parameters["zeta"], parameters["wn"]
+    b = 4.0 * zeta * zeta - 2.0
+    x = (-b + np.sqrt(b * b + 4.0)) / 2.0
+    return float(wn * np.sqrt(x) / (2.0 * np.pi))
 
 
-def pick_axes(sc, meta):
-    """Data-driven axis assignment, reported not assumed.
-
-    Gravity axis = the accel axis with the largest mean.  Main axis =
-    the axis whose accel component varies most across the run (that is
-    what the servo is moving).  Cross = the remaining one.  Deriving
-    this from the data rather than a #define is what stops the classic
-    'AXIS_MAIN edited in one file only' failure."""
-    a = np.vstack([sc["ax"], sc["ay"], sc["az"]])
-    grav = int(np.argmax(np.abs(a.mean(axis=1))))
-    rng = a.max(axis=1) - a.min(axis=1)
-    rng[grav] = -1
-    main = int(np.argmax(rng))
-    cross = [i for i in (0, 1, 2) if i not in (grav, main)][0]
-    names = "xyz"
-    print(f"  axes: gravity={names[grav]}  main={names[main]}  "
-          f"cross={names[cross]}  (main travel {rng[main]:.3f} g)")
-    if rng[main] < 0.02:
-        print("  !! main axis barely moved -- is the sweep axis VERTICAL?")
-    return grav, main, cross
-
-
-def tilt_deg(sc, num, den):
-    return np.arctan2(sc["a" + "xyz"[num]], sc["a" + "xyz"[den]]) * RAD2DEG
-
-
-def referenced_tilt(a_num, a_den, ref_num, ref_den):
-    """Signed tilt (deg) of (a_num, a_den) RELATIVE to a reference pose,
-    wrapped into (-180, 180].
-
-    Absolute atan2 sits at +/-180 whenever gravity points along -den
-    (the classic 'rest angle near the pole' case), and a sweep across
-    that boundary makes the naive angle jump +180 <-> -180 -- which is
-    what produced the 70-degree scatter and the fake 'not settled'
-    flags.  Measuring relative to the mid-range reference keeps the whole
-    travel centred near 0, so it never touches the wrap.  Scale-invariant
-    (it is a ratio), so the accel |g| error does not enter."""
-    ang = np.degrees(np.arctan2(a_num, a_den))
-    ref = np.degrees(np.arctan2(ref_num, ref_den))
-    d = ang - ref
-    return (d + 180.0) % 360.0 - 180.0
+def time_metrics(tt, angle, rate, final, pre_noise):
+    post = tt >= 0
+    tp, yp, rp = tt[post], angle[post], rate[post]
+    normalized = yp / final if abs(final) > 1e-9 else np.zeros_like(yp)
+    i10 = np.flatnonzero(normalized >= RISE_LOW_FRACTION)
+    i90 = np.flatnonzero(normalized >= RISE_HIGH_FRACTION)
+    rise = np.nan
+    if len(i10) and len(i90) and i90[0] >= i10[0]:
+        rise = 1000 * (tp[i90[0]] - tp[i10[0]])
+    within = np.abs(yp - final) <= SETTLING_BAND_FRACTION * abs(final)
+    stays = np.logical_and.accumulate(within[::-1])[::-1]
+    settle_index = np.flatnonzero(stays)
+    settle = 1000 * tp[settle_index[0]] if len(settle_index) else np.nan
+    tail = tp >= tp[-1] - METRIC_TAIL_WINDOW_S
+    tail_rate = rp[tail] - np.mean(rp[tail])
+    tail_angle = yp[tail] - np.median(yp[tail])
+    rate_rms = float(np.sqrt(np.mean(tail_rate ** 2)))
+    frequency = np.nan
+    if (len(tail_rate) >= RING_MIN_SAMPLES and
+            rate_rms >= RING_NOISE_MULTIPLIER * pre_noise):
+        dt = np.median(np.diff(tp[tail]))
+        spectrum = np.abs(np.fft.rfft(tail_rate * np.hanning(len(tail_rate))))
+        frequencies = np.fft.rfftfreq(len(tail_rate), dt)
+        band = ((frequencies >= RING_MIN_HZ) &
+                (frequencies <= min(RING_MAX_HZ, RING_NYQUIST_FRACTION / dt)))
+        if band.any():
+            idx = np.flatnonzero(band)[np.argmax(spectrum[band])]
+            frequency = float(frequencies[idx])
+    return rise, settle, float(np.sqrt(np.mean(tail_angle ** 2))), rate_rms, frequency
 
 
-def rotation_axis(gvecs):
-    """Given gravity unit vectors sampled across a SINGLE-axis sweep,
-    return the true rotation axis in sensor coordinates.
-
-    Why this exists: if the IMU is not glued perfectly parallel to the
-    gimbal axes, its x/y/z are not the pitch/roll axes, and tilt_deg()
-    (which assumes they are) mixes the two.  But when only one servo
-    moves, gravity traces a circular arc whose plane normal IS that
-    servo's true axis -- independent of how the IMU is mounted.  So we
-    recover the axis from the data instead of trusting the mounting.
-
-    The arc lies in a plane; the plane normal is the smallest-variance
-    direction of the (mean-removed) gravity samples -> smallest right
-    singular vector.  Needs real travel to be well conditioned; the
-    caller checks the sweep actually moved."""
-    g = gvecs / np.linalg.norm(gvecs, axis=1, keepdims=True)
-    gc = g - g.mean(axis=0)
-    _, s, vt = np.linalg.svd(gc, full_matrices=False)
-    n = vt[-1]
-    # sign convention: point it so the sweep progresses right-handed
-    return n / np.linalg.norm(n), s
-
-
-def angle_about_axis(gvecs, axis, g_ref):
-    """Signed rotation angle (deg) of each gravity vector about `axis`,
-    relative to g_ref.  This is the decoupled tilt about the TRUE servo
-    axis -- projecting out `axis` removes any component the other servo
-    or the mounting tilt would contribute."""
-    axis = axis / np.linalg.norm(axis)
-    g = gvecs / np.linalg.norm(gvecs, axis=1, keepdims=True)
-    # project into the plane perpendicular to the rotation axis
-    def perp(v):
-        return v - np.outer(v @ axis, axis) if v.ndim > 1 else v - (v @ axis) * axis
-    gp = perp(g)
-    r0 = perp(g_ref / np.linalg.norm(g_ref))
-    r0 = r0 / np.linalg.norm(r0)
-    # build an in-plane basis (r0, axis x r0) and read the angle off it
-    e2 = np.cross(axis, r0)
-    x = gp @ r0
-    y = gp @ e2
-    return np.degrees(np.arctan2(y, x))
-
-
-# ===================================================================
-# TEST A : mapping
-# ===================================================================
-def settled_window(g, frac=0.5):
-    """Last `frac` of a dwell group.  The earlier part is the servo
-    still moving; including it biases the angle toward the previous
-    command and inflates the apparent scatter."""
-    t = g["t"].to_numpy()
-    if len(t) < 4:
-        return g
-    cut = t[0] + (1 - frac) * (t[-1] - t[0])
-    return g[g["t"] >= cut]
-
-
-def analyze_mapping(df, meta, outdir):
-    ok, _ = health(df, meta, expect_hz=meta.get("log_hz"))
-    sc = scaled(samples(df), meta)
-    grav, main, cross = pick_axes(sc, meta)
-
-    # --- primary angle: referenced plane tilt (pole-safe) ---
-    # theta = tilt of the main axis about gravity, measured relative to
-    # the mid-range rest reference so it never crosses the +/-180 wrap.
-    # This is scale-invariant and does not depend on the fragile arc fit.
-    zero = sc[(sc["phase"] == "zero") & (sc["seq"] == -1)]
-    ref_m = float(zero["a" + "xyz"[main]].mean())
-    ref_g = float(zero["a" + "xyz"[grav]].mean())
-    ref_c = float(zero["a" + "xyz"[cross]].mean())
-    sc = sc.assign(
-        theta=referenced_tilt(sc["a" + "xyz"[main]], sc["a" + "xyz"[grav]],
-                              ref_m, ref_g),
-        theta_cross=referenced_tilt(sc["a" + "xyz"[cross]], sc["a" + "xyz"[grav]],
-                                    ref_c, ref_g))
-
-    # --- misalignment: reported as a DIAGNOSTIC, with a pole guard ---
-    # The arc fit recovers the true servo axis for a crooked IMU, but it
-    # is degenerate when the sweep sits near the gravity pole (both the
-    # servo axis and the gravity axis are then low-variance and the SVD
-    # cannot tell them apart -- it returns the gravity axis, which used
-    # to poison the whole mapping).  So we only trust it away from the
-    # pole, and never let it drive the primary angle.
-    sweep = sc[sc["phase"].isin(["up", "dn", "up2", "dn2"])]
-    G = np.vstack([sweep["ax"], sweep["ay"], sweep["az"]]).T
-    g_ref = np.array([zero["ax"].mean(), zero["ay"].mean(), zero["az"].mean()])
-    ghat = g_ref / np.linalg.norm(g_ref)
-    axis_meas, svals = rotation_axis(G)
-    nominal = np.eye(3)[main]
-    misalign = np.degrees(np.arccos(np.clip(abs(axis_meas @ nominal), 0, 1)))
-    pole_align = abs(axis_meas @ ghat)          # 1 => axis == gravity => degenerate
-    degenerate = pole_align > 0.90 or len(G) < 20
-
-    print("\n=== AXIS ALIGNMENT (diagnostic) ===")
-    print(f"  measured servo axis (sensor frame)  "
-          f"[{axis_meas[0]:+.3f} {axis_meas[1]:+.3f} {axis_meas[2]:+.3f}]")
-    if degenerate:
-        print(f"  arc fit DEGENERATE (sweep near the gravity pole, "
-              f"axis.g={pole_align:.2f}); misalignment not reliable.")
-        print(f"  primary angle uses referenced plane tilt about "
-              f"{('xyz')[main]}/{('xyz')[grav]} -- unaffected.")
-    else:
-        print(f"  IMU misalignment vs nominal '{('xyz')[main]}'   "
-              f"{misalign:.2f} deg")
-        if misalign > 5:
-            print(f"  note: >5 deg crooked mount can leak into the "
-                  f"cross-axis number below.")
-
-    zero = sc[sc["phase"] == "zero"]
-    zero_open = settled_window(zero[zero["seq"] == -1])
-    zero_close = settled_window(zero[zero["seq"] == -2])
-    z0 = float(zero_open["theta"].mean()) if len(zero_open) else 0.0
-    z0c = float(zero_open["theta_cross"].mean()) if len(zero_open) else 0.0
-    print("\n=== ZERO REFERENCE ===")
-    print(f"  opening zero       {z0:+.4f} deg  (sd {zero_open['theta'].std():.4f})")
-    if len(zero_close):
-        z1 = float(zero_close["theta"].mean())
-        print(f"  closing zero       {z1:+.4f} deg")
-        print(f"  zero drift         {z1-z0:+.4f} deg  "
-              f"{'OK' if abs(z1-z0) < 0.2 else '!! rig moved or servo re-seated'}")
-
-    rows = []
-    for (phase, seq), g in sc[sc["phase"].isin(["up", "dn", "up2", "dn2"])] \
-                             .groupby(["phase", "seq"]):
-        if seq < 0:
+def analyze_step(run_dir: Path, calibration_path: Path) -> dict:
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df).reset_index(drop=True)
+    gyro = corrected_gyro(s, meta, cal)
+    counts = flag_counts(s)
+    axis = int(last_value(meta["axis"]))
+    gimbal = str(last_value(meta.get("gimbal", GIMBAL_NAMES[axis])))
+    pulse_col = "cmd_outer" if axis == 0 else "cmd_inner"
+    main = int(np.argmax(np.ptp(gyro, axis=0)))
+    events = event_rows(df)
+    arm = {int(row.seq): (row.t, int(row[pulse_col]))
+           for _, row in events[events["phase"] == "arm"].iterrows()}
+    cmd = {int(row.seq): (row.t, int(row[pulse_col]))
+           for _, row in events[events["phase"] == "cmd"].iterrows()}
+    rows, traces = [], []
+    for seq, group in s.groupby("seq"):
+        seq = int(seq)
+        if seq not in arm or seq not in cmd:
             continue
-        w = settled_window(g)
-        # flatness check: if the plate is still creeping in the window we
-        # are supposed to call settled, say so instead of reporting it
-        th = w["theta"].to_numpy()
-        t = w["t"].to_numpy()
-        creep = np.polyfit(t - t[0], th, 1)[0] if len(t) > 3 else 0.0
-        rows.append(dict(
-            pass_=phase, seq=int(seq), pulse_us=int(w["cmd_a"].iloc[0] if
-                                                    axis_of(meta) == 0
-                                                    else w["cmd_b"].iloc[0]),
-            theta_deg=float(th.mean()) - z0,
-            theta_sd=float(th.std()),
-            theta_cross_deg=float(w["theta_cross"].mean()) - z0c,
-            n=len(w), creep_dps=float(creep),
-            settled=bool(abs(creep) < 0.5),
-        ))
-    m = pd.DataFrame(rows).sort_values(["pass_", "pulse_us"])
-    if m.empty:
-        print("!! no sweep data found"); return
+        idx = group.index.to_numpy()
+        t = group["t"].to_numpy()
+        command_time = cmd[seq][0]
+        rate = detrend_rate(t, gyro[idx, main], command_time)
+        angle = np.concatenate([[0.0], np.cumsum(np.diff(t) *
+            (rate[1:] + rate[:-1]) / 2.0)])
+        tt = t - command_time
+        angle -= angle[tt < 0].mean()
+        post_t, post_y = tt[tt >= 0], angle[tt >= 0]
+        final = float(np.median(post_y[-max(
+            10, int(FINAL_ANGLE_WINDOW_S / np.median(np.diff(t)))):]))
+        tail = tt >= tt[-1] - SETTLED_SLOPE_WINDOW_S
+        settled = (abs(np.polyfit(tt[tail], angle[tail], 1)[0]) <
+                   STEP_SETTLED_CREEP_MAX_DPS)
+        fit_model = None
+        kind = "none"
+        parameters = {}
+        try:
+            p1, _ = curve_fit(first_order, post_t, post_y,
+                              p0=[final, FIRST_ORDER_INITIAL_DELAY_S,
+                                  FIRST_ORDER_INITIAL_TAU_S],
+                              bounds=([
+                                  -MODEL_AMPLITUDE_BOUND_FACTOR * abs(final) -
+                                  MODEL_AMPLITUDE_BOUND_MARGIN_DEG,
+                                  0, FIRST_ORDER_TAU_MIN_S], [
+                                  MODEL_AMPLITUDE_BOUND_FACTOR * abs(final) +
+                                  MODEL_AMPLITUDE_BOUND_MARGIN_DEG,
+                                  MODEL_DELAY_MAX_S, FIRST_ORDER_TAU_MAX_S]),
+                              maxfev=FIRST_ORDER_MAX_EVALUATIONS)
+            fit_model = first_order(post_t, *p1)
+            kind = "1st"
+            parameters = {"A": p1[0], "delay": p1[1], "tau": p1[2]}
+        except (RuntimeError, ValueError):
+            pass
+        smoothed = signal.savgol_filter(
+            post_y, min(SMOOTH_MAX_WINDOW_SAMPLES, len(post_y) // 2 * 2 - 1),
+            SMOOTH_POLY_ORDER)
+        overshoot = ((np.max(np.abs(smoothed)) - abs(final)) / abs(final)
+                     if abs(final) > 1e-9 else 0.0)
+        if overshoot > SECOND_ORDER_OVERSHOOT_TRIGGER:
+            try:
+                p2, _ = curve_fit(second_order, post_t, post_y,
+                                  p0=[final, FIRST_ORDER_INITIAL_DELAY_S,
+                                      SECOND_ORDER_INITIAL_WN_RAD_S,
+                                      SECOND_ORDER_INITIAL_ZETA],
+                                  bounds=([
+                                      -MODEL_AMPLITUDE_BOUND_FACTOR * abs(final) -
+                                      MODEL_AMPLITUDE_BOUND_MARGIN_DEG,
+                                      0, SECOND_ORDER_WN_MIN_RAD_S,
+                                      SECOND_ORDER_ZETA_MIN], [
+                                      MODEL_AMPLITUDE_BOUND_FACTOR * abs(final) +
+                                      MODEL_AMPLITUDE_BOUND_MARGIN_DEG,
+                                      MODEL_DELAY_MAX_S,
+                                      SECOND_ORDER_WN_MAX_RAD_S,
+                                      SECOND_ORDER_ZETA_MAX]),
+                                  maxfev=SECOND_ORDER_MAX_EVALUATIONS)
+                fit_model = second_order(post_t, *p2)
+                kind = "2nd"
+                parameters = {"A": p2[0], "delay": p2[1],
+                              "wn": p2[2], "zeta": p2[3]}
+            except (RuntimeError, ValueError):
+                pass
+        pre = rate[tt < 0]
+        noise = float(pre.std())
+        threshold = np.flatnonzero(
+            (tt > 0) & (np.abs(rate) > DIRECT_ONSET_SIGMA * noise))
+        onset = 1000 * tt[threshold[0]] if len(threshold) else np.nan
+        residual = (100 * np.std(post_y - fit_model) / abs(final)
+                    if fit_model is not None and abs(final) > 1e-9 else np.nan)
+        rise, settle, angle_rms, rate_rms, ring = time_metrics(
+            tt, angle, rate, final, noise)
+        rows.append({
+            "seq": seq, "amp_us": cmd[seq][1] - arm[seq][1],
+            "final_deg": final, "model": kind,
+            "fitted_delay_ms": 1000 * parameters.get("delay", np.nan),
+            "direct_onset_ms": onset,
+            "tau_ms": 1000 * parameters.get("tau", np.nan),
+            "wn_rad_s": parameters.get("wn", np.nan),
+            "zeta": parameters.get("zeta", np.nan),
+            "bandwidth_hz": model_bandwidth(kind, parameters) if kind != "none" else np.nan,
+            "rise_10_90_ms": rise, "settling_2pct_ms": settle,
+            "overshoot_pct": 100 * overshoot,
+            "peak_slew_dps": float(np.max(np.abs(rate))),
+            "tail_angle_rms_deg": angle_rms, "tail_rate_rms_dps": rate_rms,
+            "ring_frequency_hz": ring, "residual_pct": residual,
+            "settled": bool(settled), "pre_noise_dps": noise,
+        })
+        traces.append((seq, tt, angle, rate, post_t, fit_model))
+    summary = pd.DataFrame(rows).sort_values("seq")
+    if summary.empty:
+        raise ValueError("step run has no complete arm/cmd sequences")
+    useful = summary[
+        (summary["final_deg"].abs() >= STEP_MIN_MOVE_DEG) & summary["settled"] &
+        (summary["residual_pct"] <= STEP_MAX_MODEL_RESIDUAL_PCT)]
+    result = {
+        "test": "B", "axis": axis, "gimbal": gimbal,
+        "main_gyro_axis": "xyz"[main], **counts,
+        "step_count": len(summary), "useful_step_count": len(useful),
+        "direct_onset_ms": float(useful["direct_onset_ms"].median()),
+        "fitted_delay_ms": float(useful["fitted_delay_ms"].median()),
+        "rise_10_90_ms": float(useful["rise_10_90_ms"].median()),
+        "settling_2pct_ms": float(useful["settling_2pct_ms"].median()),
+        "bandwidth_hz": float(useful["bandwidth_hz"].median()),
+        "peak_slew_dps": float(useful["peak_slew_dps"].max()),
+        "tail_rate_rms_dps": float(useful["tail_rate_rms_dps"].median()),
+        "median_residual_pct": float(useful["residual_pct"].median()),
+        "persistent_ring_detected": bool(useful["ring_frequency_hz"].notna().any()),
+    }
+    delay_gap = abs(result["fitted_delay_ms"] - result["direct_onset_ms"])
+    result["delay_split_warning"] = bool(
+        delay_gap > CHIRP_DELAY_GAP_TRIGGER_MS)
+    result["recommend_chirp"] = bool(
+        result["median_residual_pct"] > CHIRP_RESIDUAL_TRIGGER_PCT or
+        result["delay_split_warning"] or
+        result["persistent_ring_detected"])
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f}",
+         counts["late_samples"] <= late_limit),
+        (f"useful_step_count {len(useful)} < 최소 {STEP_MIN_USEFUL_COUNT} "
+         f"(전체 {len(summary)}개 중 min-move/settled/residual 조건을 만족하는 step 부족)",
+         len(useful) >= STEP_MIN_USEFUL_COUNT),
+    ])
+    summary.to_csv(run_dir / "step_summary.csv", index=False)
+    save_json(run_dir / "analysis.json", finite_json(result))
+    # Plots are produced separately by plot.py step.
+    return result
 
-    n_uns = int((~m["settled"]).sum())
-    print("\n=== MAPPING ===")
-    print(f"  points             {len(m)}  ({n_uns} not settled)")
-    print(f"  repeatability      median sd {m['theta_sd'].median():.4f} deg, "
-          f"worst {m['theta_sd'].max():.4f}")
 
-    # linear fit over the middle 60% of travel, where geometry is most linear
-    lo, hi = m["pulse_us"].quantile([0.20, 0.80])
-    mid = m[(m["pulse_us"] >= lo) & (m["pulse_us"] <= hi)]
-    k, b = np.polyfit(mid["pulse_us"], mid["theta_deg"], 1)
-    resid = m["theta_deg"] - (k * m["pulse_us"] + b)
-    true_neutral = -b / k
-    span = m["theta_deg"].max() - m["theta_deg"].min()
-    print(f"  gain k             {k:.5f} deg/us   ({1/k:.2f} us/deg)")
-    print(f"  true neutral       {true_neutral:.1f} us  "
-          f"(nominal {meta['neutral_us']}, offset {true_neutral-meta['neutral_us']:+.1f})")
-    print(f"  travel             {m['theta_deg'].min():+.2f} .. "
-          f"{m['theta_deg'].max():+.2f} deg  (span {span:.2f})")
-    print(f"  nonlinearity       {100*resid.abs().max()/span:.2f}% of span "
-          f"(max |resid| {resid.abs().max():.3f} deg)")
+def analyze_chirp(run_dir: Path, calibration_path: Path) -> dict:
+    """Frequency response (PWM -> angle) from a logarithmic chirp via Welch CSD."""
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df).reset_index(drop=True)
+    gyro = corrected_gyro(s, meta, cal)
+    counts = flag_counts(s)
+    axis = int(last_value(meta["axis"]))
+    gimbal = str(last_value(meta.get("gimbal", GIMBAL_NAMES[axis])))
+    pulse_col = "cmd_outer" if axis == 0 else "cmd_inner"
+    sweep = s[s["phase"] == "chirp"]
+    if len(sweep) < 1000:
+        raise ValueError("chirp run has too few sweep samples")
+    idx = sweep.index.to_numpy()
+    t = sweep["t"].to_numpy()
+    fs = 1.0 / float(np.median(np.diff(t)))
+    u = sweep[pulse_col].to_numpy(float)
+    u = u - u.mean()                       # commanded deviation [us]
+    main = int(np.argmax(np.ptp(gyro[idx], axis=0)))
+    y = gyro[idx, main]
+    y = y - y.mean()                       # measured rate [deg/s]
 
-    # hysteresis: up vs down at the same pulse, averaged over both cycles
-    up = m[m["pass_"].isin(["up", "up2"])].groupby("pulse_us")["theta_deg"].mean()
-    dn = m[m["pass_"].isin(["dn", "dn2"])].groupby("pulse_us")["theta_deg"].mean()
+    f0 = float(last_value(meta.get("chirp_f0_hz", 0.5)))
+    f1 = float(last_value(meta.get("chirp_f1_hz", 25.0)))
+    nperseg = min(int(CHIRP_WELCH_SEGMENT_S * fs), len(u))
+    f, Pxx = signal.welch(u, fs=fs, nperseg=nperseg)
+    _, Pyy = signal.welch(y, fs=fs, nperseg=nperseg)
+    _, Pxy = signal.csd(u, y, fs=fs, nperseg=nperseg)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        h_rate = Pxy / Pxx                 # (deg/s) per us
+        coh = np.abs(Pxy) ** 2 / (Pxx * Pyy)
+    keep = (f >= f0) & (f <= f1)
+    f, h_rate, coh = f[keep], h_rate[keep], coh[keep]
+    h_ang = h_rate / (1j * 2 * np.pi * f)  # PWM -> angle [deg/us]
+    gain = np.abs(h_ang)
+    phase_deg = np.degrees(np.unwrap(np.angle(h_ang)))
+
+    trusted = coh >= CHIRP_MIN_COHERENCE
+    ref = trusted & (f <= CHIRP_GAIN_REF_MAX_HZ)
+    gain_ref = float(np.median(gain[ref])) if ref.any() else float("nan")
+    gain_db = 20 * np.log10(gain / gain_ref) if np.isfinite(gain_ref) else np.full_like(gain, np.nan)
+
+    bw = float("nan")
+    if trusted.any():
+        tf, tg = f[trusted], gain_db[trusted]
+        below = np.flatnonzero(tg <= -3.0)
+        if len(below):
+            bw = float(tf[below[0]])
+    delay_ms = float("nan")
+    if trusted.sum() >= 3:
+        slope = np.polyfit(f[trusted], phase_deg[trusted], 1)[0]   # deg/Hz
+        delay_ms = -slope / 360.0 * 1000.0
+    trusted_span = float(f[trusted].max() - f[trusted].min()) if trusted.any() else 0.0
+
+    pd.DataFrame({"freq_hz": f, "gain_db": gain_db, "gain_deg_per_us": gain,
+                  "phase_deg": phase_deg, "coherence": coh}).to_csv(
+        run_dir / "chirp_response.csv", index=False)
+    result = {
+        "test": "C", "axis": axis, "gimbal": gimbal,
+        "main_gyro_axis": "xyz"[main], **counts,
+        "sample_rate_hz": float(fs),
+        "coherent_band_lo_hz": float(f[trusted].min()) if trusted.any() else float("nan"),
+        "coherent_band_hi_hz": float(f[trusted].max()) if trusted.any() else float("nan"),
+        "trusted_span_hz": trusted_span,
+        "gain_ref_deg_per_us": gain_ref,
+        "bandwidth_3db_hz": bw,
+        "phase_delay_ms": delay_ms,
+    }
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f}",
+         counts["late_samples"] <= late_limit),
+        (f"trusted_span_hz {trusted_span:.2f} < 최소 {CHIRP_MIN_TRUSTED_SPAN_HZ} "
+         f"(coherence >= {CHIRP_MIN_COHERENCE} 대역 부족)",
+         trusted_span >= CHIRP_MIN_TRUSTED_SPAN_HZ),
+    ])
+    save_json(run_dir / "analysis.json", finite_json(result))
+    return result
+
+
+def analyze_deadband(run_dir: Path, calibration_path: Path) -> dict:
+    """Backlash / deadband near neutral from a fine ascending/descending staircase."""
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df).reset_index(drop=True)
+    acc = corrected_acc(s, meta, cal)
+    for i, n in enumerate("xyz"):
+        s["a" + n] = acc[:, i]
+    counts = flag_counts(s)
+    axis = int(last_value(meta["axis"]))
+    gimbal = str(last_value(meta.get("gimbal", GIMBAL_NAMES[axis])))
+    pulse_col = "cmd_outer" if axis == 0 else "cmd_inner"
+    zero = s[s["phase"] == "zero"]
+    branch = s[s["phase"].isin(["up", "dn"])]
+    if zero.empty or branch.empty:
+        raise ValueError("deadband run missing zero/branch samples")
+    gravity = int(np.argmax(np.abs(zero[["ax", "ay", "az"]].mean()).to_numpy()))
+    ref = zero[["ax", "ay", "az"]].mean().to_numpy()
+    cands = [i for i in range(3) if i != gravity]
+
+    def settled_span(i: int) -> float:
+        s["_th"] = referenced_tilt(acc[:, i], acc[:, gravity], ref[i], ref[gravity])
+        means = [s.loc[settled_half(g).index, "_th"].mean()
+                 for _, g in branch.groupby(["phase", "seq"])]
+        s.drop(columns="_th", inplace=True)
+        return float(np.nanmax(means) - np.nanmin(means)) if means else 0.0
+
+    main = max(cands, key=settled_span)
+    s["theta"] = referenced_tilt(acc[:, main], acc[:, gravity], ref[main], ref[gravity])
+    rows = []
+    for (phase, seq), g in branch.groupby(["phase", "seq"]):
+        w = settled_half(g)
+        rows.append({"phase": phase, "pulse_us": int(g[pulse_col].iloc[0]),
+                     "theta_deg": float(s.loc[w.index, "theta"].mean())})
+    pts = pd.DataFrame(rows)
+    up = pts[pts["phase"] == "up"].groupby("pulse_us")["theta_deg"].mean()
+    dn = pts[pts["phase"] == "dn"].groupby("pulse_us")["theta_deg"].mean()
     common = up.index.intersection(dn.index)
     hyst = (dn[common] - up[common])
-    print(f"  hysteresis/backlash  mean {hyst.mean():+.4f} deg, "
-          f"max {hyst.abs().max():.4f} deg  ({100*hyst.abs().max()/span:.2f}% of span)")
+    gain = float(np.polyfit(up.index.to_numpy(float), up.to_numpy(), 1)[0])
+    backlash_deg = float(np.median(np.abs(hyst))) if len(common) else float("nan")
+    backlash_us = float(backlash_deg / abs(gain)) if gain else float("nan")
+    span_deg = float(up.max() - up.min())
 
-    cross_span = m["theta_cross_deg"].max() - m["theta_cross_deg"].min()
-    print(f"  cross-axis coupling  {cross_span:.3f} deg = "
-          f"{100*cross_span/span:.2f}% of main travel")
-
-    # ---- outputs ----
-    m.to_csv(outdir / "mapping_points.csv", index=False)
-    lut = pd.DataFrame({"pulse_us": common,
-                        "theta_deg": (up[common] + dn[common]) / 2,
-                        "theta_up": up[common], "theta_dn": dn[common]})
-    lut.to_csv(outdir / "lut.csv", index=False)
-
-    fig, ax = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
-    for p, style in [("up", "-o"), ("dn", "-s"), ("up2", "--^"), ("dn2", "--v")]:
-        d = m[m["pass_"] == p]
-        if len(d):
-            ax[0].plot(d["pulse_us"], d["theta_deg"], style, ms=3, lw=1, label=p)
-    ax[0].plot(m["pulse_us"], k * m["pulse_us"] + b, "k:", lw=1,
-               label=f"fit {k:.4f} deg/us")
-    ax[0].axvline(true_neutral, color="k", lw=0.6, ls="--")
-    ax[0].set_ylabel("plate angle [deg]"); ax[0].legend(fontsize=8)
-    ax[0].set_title(f"TEST A mapping  |  axis {meta.get('axis')}  |  "
-                    f"k={k:.4f} deg/us  neutral={true_neutral:.0f} us")
-    ax[0].grid(alpha=.3)
-
-    ax[1].plot(m["pulse_us"], resid, ".", ms=4)
-    ax[1].axhline(0, color="k", lw=.6)
-    ax[1].set_ylabel("residual from linear [deg]"); ax[1].grid(alpha=.3)
-
-    ax[2].plot(common, hyst, "-o", ms=3, label="dn - up (hysteresis)")
-    ax[2].plot(m["pulse_us"], m["theta_cross_deg"], ".", ms=3, label="cross axis")
-    ax[2].errorbar(m["pulse_us"], np.zeros(len(m)), yerr=m["theta_sd"],
-                   fmt="none", ecolor="gray", alpha=.5, label="per-point sd")
-    ax[2].axhline(0, color="k", lw=.6)
-    ax[2].set_ylabel("deg"); ax[2].set_xlabel("pulse [us]")
-    ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
-    fig.tight_layout()
-    fig.savefig(outdir / "mapping.png", dpi=130)
-    print(f"\n  wrote lut.csv, mapping_points.csv, mapping.png -> {outdir}")
-    if not ok:
-        print("  !! health check FAILED -- numbers above are informational only")
+    pd.DataFrame({"pulse_us": common, "theta_up_deg": up[common].to_numpy(),
+                  "theta_dn_deg": dn[common].to_numpy()}).to_csv(
+        run_dir / "deadband_points.csv", index=False)
+    result = {
+        "test": "D", "axis": axis, "gimbal": gimbal, "main_axis": "xyz"[main],
+        **counts, "local_gain_deg_per_us": gain,
+        "backlash_deg": backlash_deg, "backlash_us": backlash_us,
+        "travel_span_deg": span_deg,
+        "backlash_exceeds_threshold": bool(
+            (np.isfinite(backlash_us) and
+             backlash_us > DEADBAND_MAX_ACCEPTABLE_US) or
+            (np.isfinite(backlash_deg) and
+             backlash_deg > DEADBAND_MAX_ACCEPTABLE_DEG)),
+    }
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    motion_limit = DEADBAND_MOTION_THRESHOLD_DEG * 5
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f}",
+         counts["late_samples"] <= late_limit),
+        (f"travel_span_deg {span_deg:.3f} <= 최소 {motion_limit:.2f}",
+         span_deg > motion_limit),
+    ])
+    save_json(run_dir / "analysis.json", finite_json(result))
+    return result
 
 
-# ===================================================================
-# TEST B : step response
-# ===================================================================
-def first_order(t, A, td, tau):
-    y = np.zeros_like(t)
-    m = t > td
-    y[m] = A * (1 - np.exp(-(t[m] - td) / tau))
-    return y
+def analyze_grid(run_dir: Path, calibration_path: Path) -> dict:
+    """Joint PWM_A x PWM_B -> tip-angle surface from a 2D grid sweep.
 
-
-def second_order(t, A, td, wn, z):
-    """Underdamped step response, zero initial conditions."""
-    y = np.zeros_like(t)
-    m = t > td
-    tt = t[m] - td
-    z = np.clip(z, 1e-3, 0.999)
-    wd = wn * np.sqrt(1 - z * z)
-    y[m] = A * (1 - np.exp(-z * wn * tt) *
-                (np.cos(wd * tt) + (z / np.sqrt(1 - z * z)) * np.sin(wd * tt)))
-    return y
-
-
-def detrend_rate(t, r, t_cmd, tail_frac=0.35):
-    """Fit offset+slope over (pre-step) UNION (settled tail) and subtract.
-
-    Both windows have true rate ~ 0, so any offset or slope there is
-    sensor bias and drift.  Using both ends rather than just the
-    pre-window is what makes the slope estimate usable -- see module
-    docstring for the numbers."""
-    tail_start = t[-1] - tail_frac * (t[-1] - t_cmd)
-    mask = (t < t_cmd) | (t >= tail_start)
-    if mask.sum() < 10:
-        return r - np.mean(r[t < t_cmd]), (0.0, 0.0)
-    p = np.polyfit(t[mask], r[mask], 1)
-    return r - np.polyval(p, t), (float(p[0]), float(p[1]))
-
-
-def analyze_step(df, meta, outdir):
-    ok, _ = health(df, meta, expect_hz=meta.get("log_hz"))
-    sc = scaled(samples(df), meta)
-
-    # which gyro axis is the servo actually driving?
-    ranges = {c: sc["g" + c].abs().max() for c in "xyz"}
-    main = max(ranges, key=ranges.get)
-    cross = [c for c in "xyz" if c != main]
-    print(f"  main gyro axis     g{main}  (peak {ranges[main]:.1f} dps; "
-          f"cross {ranges[cross[0]]:.1f}, {ranges[cross[1]]:.1f})")
-
-    # per-step command instants, as logged -- never assumed from pre_ms
-    ev = events(df)
-    cmd_t = {int(r["seq"]): r["t"] for _, r in ev[ev["phase"] == "cmd"].iterrows()}
-
-    rows, traces = [], []
-    for seq, g in sc.groupby("seq"):
-        g = g.sort_values("t")
-        t = g["t"].to_numpy()
-        r = g["g" + main].to_numpy()
-        t_cmd = cmd_t.get(int(seq))
-        if t_cmd is None:
-            pre = g[g["phase"] == "pre"]
-            if not len(pre):
-                continue
-            t_cmd = float(pre["t"].max())
-
-        r_det, drift = detrend_rate(t, r, t_cmd)
-        # integrate on RECORDED timestamps; rectangular would bias high
-        # on a monotonic rise, trapezoid does not
-        theta = np.concatenate([[0.0], np.cumsum(np.diff(t) *
-                                                 (r_det[1:] + r_det[:-1]) / 2)])
-        tt = t - t_cmd
-        theta = theta - np.mean(theta[tt < 0])
-
-        # final value: median of the last 150 ms, with a flatness check
-        tail = theta[tt >= tt[-1] - 0.150]
-        ttail = tt[tt >= tt[-1] - 0.150]
-        A_obs = float(np.median(tail))
-        flat = float(abs(np.polyfit(ttail, tail, 1)[0])) if len(ttail) > 3 else 9e9
-        settled = flat < 0.5                    # deg/s of residual creep
-
-        fit = post = tt[tt >= 0]
-        yp = theta[tt >= 0]
-        model, par, perr, kind = None, {}, {}, "none"
-        try:
-            p0 = [A_obs, 0.015, 0.05]
-            bnds = ([-abs(A_obs)*3 - 1, 0.0, 1e-3],
-                    [abs(A_obs)*3 + 1, 0.3, 2.0])
-            if A_obs < 0:
-                bnds = ([-abs(A_obs)*3 - 1, 0.0, 1e-3],
-                        [abs(A_obs)*3 + 1, 0.3, 2.0])
-            popt, pcov = curve_fit(first_order, post, yp, p0=p0,
-                                   bounds=bnds, maxfev=20000)
-            model, kind = first_order(post, *popt), "1st"
-            par = dict(A=popt[0], td=popt[1], tau=popt[2])
-            perr = dict(zip(("A", "td", "tau"), np.sqrt(np.diag(pcov))))
-        except Exception as e:
-            print(f"  !! seq {seq}: first-order fit failed ({e})")
-
-        # overshoot, measured on a zero-phase smoothed copy -- smoothing
-        # is allowed here because we want the peak, not its time
-        if len(yp) > 30:
-            b, a = signal.butter(2, min(0.2, 50 / (0.5 / np.median(np.diff(t)))))
-            ysm = signal.filtfilt(b, a, yp)
-        else:
-            ysm = yp
-        peak = ysm[np.argmax(np.abs(ysm))]
-        overshoot = (abs(peak) - abs(A_obs)) / abs(A_obs) if A_obs else 0.0
-
-        if overshoot > 0.05:
-            try:
-                popt2, pcov2 = curve_fit(
-                    second_order, post, yp,
-                    p0=[A_obs, 0.015, 40.0, 0.35],
-                    bounds=([-abs(A_obs)*3-1, 0.0, 1.0, 0.01],
-                            [abs(A_obs)*3+1, 0.3, 500.0, 0.999]), maxfev=30000)
-                model, kind = second_order(post, *popt2), "2nd"
-                par = dict(A=popt2[0], td=popt2[1], wn=popt2[2], zeta=popt2[3])
-                perr = dict(zip(("A", "td", "wn", "zeta"), np.sqrt(np.diag(pcov2))))
-            except Exception as e:
-                print(f"  !! seq {seq}: second-order fit failed ({e})")
-
-        # independent cross-check: 6-sigma threshold on the raw rate.
-        # It always fires late; it is here to catch a fit that ran away,
-        # not to be the answer.
-        pre_r = r_det[tt < 0]
-        sd = float(np.std(pre_r)) if len(pre_r) > 5 else 0.0
-        thr = np.where(np.abs(r_det) > 6 * sd)[0]
-        thr = thr[tt[thr] > 0] if len(thr) else thr
-        td_thr = float(tt[thr[0]]) if len(thr) else np.nan
-
-        resid_pct = (100 * np.std(yp - model) / abs(A_obs)
-                     if model is not None and A_obs else np.nan)
-        slew = float(np.max(np.abs(r_det)))
-
-        rows.append(dict(
-            seq=int(seq), kind=kind,
-            amp_us=int(g["cmd_a"].iloc[-1] - g["cmd_a"].iloc[0])
-                    if axis_of(meta) == 0 else
-                    int(g["cmd_b"].iloc[-1] - g["cmd_b"].iloc[0]),
-            A_final_deg=A_obs, A_fit_deg=par.get("A", np.nan),
-            td_ms=1e3 * par.get("td", np.nan),
-            td_se_ms=1e3 * perr.get("td", np.nan),
-            tau_ms=1e3 * par.get("tau", np.nan),
-            wn_rad_s=par.get("wn", np.nan), zeta=par.get("zeta", np.nan),
-            overshoot_pct=100 * overshoot,
-            td_threshold_ms=1e3 * td_thr,
-            slew_dps=slew, slew_per_deg=slew / abs(A_obs) if A_obs else np.nan,
-            resid_pct_of_amp=resid_pct,
-            settled="YES" if settled else "NO",
-            drift_slope_dps_s=drift[0],
-            pre_noise_sd_dps=sd,
-        ))
-        traces.append((seq, tt, theta, r_det, post, model))
-
-    if not rows:
-        print("!! no steps found"); return
-    s = pd.DataFrame(rows).sort_values("seq")
-    s.to_csv(outdir / "step_summary.csv", index=False)
-
-    print("\n=== STEP ===")
-    with pd.option_context("display.width", 200, "display.max_columns", 50):
-        print(s[["seq", "amp_us", "A_final_deg", "kind", "td_ms", "tau_ms",
-                 "wn_rad_s", "zeta", "overshoot_pct", "slew_dps",
-                 "resid_pct_of_amp", "settled"]].to_string(index=False,
-                                                           float_format="%.3f"))
-
-    good = s[(s["settled"] == "YES") & s["td_ms"].notna()]
-    if len(good):
-        print(f"\n  DEAD TIME   td = {good['td_ms'].median():.2f} ms "
-              f"(median of {len(good)} steps, spread "
-              f"{good['td_ms'].std():.2f} ms)")
-        print(f"  threshold cross-check     {good['td_threshold_ms'].median():.2f} ms "
-              f"(expected slightly LARGER; if it is smaller the fit is wrong)")
-        if good["tau_ms"].notna().any():
-            print(f"  LAG         tau = {good['tau_ms'].median():.2f} ms")
-        if good["wn_rad_s"].notna().any():
-            g2 = good[good["wn_rad_s"].notna()]
-            print(f"  LAG (2nd)   wn = {g2['wn_rad_s'].median():.1f} rad/s, "
-                  f"zeta = {g2['zeta'].median():.3f}")
-        # saturation self-check
-        sp = good["slew_per_deg"].dropna()
-        if len(sp) > 2:
-            cv = sp.std() / sp.mean()
-            print(f"  slew/amp CV = {100*cv:.1f}%  -> "
-                  + ("constant: NO saturation, drop the rate limiter"
-                     if cv < 0.15 else
-                     "NOT constant: large steps ARE rate limited"))
-        print(f"  peak slew observed        {good['slew_dps'].max():.1f} dps "
-              f"(datasheet ceiling ~577)")
-    n_bad = int((s["settled"] == "NO").sum())
-    if n_bad:
-        print(f"  !! {n_bad} step(s) never settled -- excluded from the medians")
-
-    n = len(traces)
-    fig, axes = plt.subplots(n, 2, figsize=(12, 2.0 * n), squeeze=False)
-    for i, (seq, tt, theta, r_det, post, model) in enumerate(traces):
-        axes[i][0].plot(tt * 1e3, theta, lw=.8, label="integrated angle")
-        if model is not None:
-            axes[i][0].plot(post * 1e3, model, "r--", lw=.9, label="fit")
-        axes[i][0].axvline(0, color="k", lw=.5)
-        td = s.loc[s["seq"] == seq, "td_ms"]
-        if len(td) and np.isfinite(td.iloc[0]):
-            axes[i][0].axvline(td.iloc[0], color="g", lw=.6, ls=":")
-        axes[i][0].set_ylabel(f"seq {seq}\n[deg]", fontsize=8)
-        axes[i][0].grid(alpha=.3)
-        if i == 0:
-            axes[i][0].legend(fontsize=7)
-        axes[i][1].plot(tt * 1e3, r_det, lw=.6)
-        axes[i][1].axvline(0, color="k", lw=.5)
-        axes[i][1].set_ylabel("[dps]", fontsize=8); axes[i][1].grid(alpha=.3)
-    axes[-1][0].set_xlabel("t since command [ms]")
-    axes[-1][1].set_xlabel("t since command [ms]")
-    fig.suptitle(f"TEST B step response  |  axis {meta.get('axis')}", y=1.0)
-    fig.tight_layout()
-    fig.savefig(outdir / "step.png", dpi=130)
-
-    fig2, ax2 = plt.subplots(figsize=(7, 4))
-    ax2.plot(s["amp_us"].abs(), s["resid_pct_of_amp"], "o")
-    ax2.set_xlabel("|step amplitude| [us]")
-    ax2.set_ylabel("fit residual [% of amplitude]")
-    ax2.set_title("model adequacy -- rising with amplitude means saturation")
-    ax2.grid(alpha=.3)
-    fig2.tight_layout()
-    fig2.savefig(outdir / "step_residuals.png", dpi=130)
-
-    print(f"\n  wrote step_summary.csv, step.png, step_residuals.png -> {outdir}")
-    if not ok:
-        print("  !! health check FAILED -- numbers above are informational only")
-
-
-# ===================================================================
-# TEST K : deadband
-# ===================================================================
-def analyze_deadband(df, meta, outdir):
-    ok, _ = health(df, meta, expect_hz=meta.get("log_hz"))
-    sc = scaled(samples(df), meta)
-    grav, main, cross = pick_axes(sc, meta)
-    # pole-safe referenced tilt; reference = median pose of this run
-    ref_m = float(sc["a" + "xyz"[main]].median())
-    ref_g = float(sc["a" + "xyz"[grav]].median())
-    sc = sc.assign(theta=referenced_tilt(sc["a" + "xyz"[main]],
-                                         sc["a" + "xyz"[grav]], ref_m, ref_g))
-    pulse_col = "cmd_a" if axis_of(meta) == 0 else "cmd_b"
+    Both non-gravity accel axes are kept as two tilt components (pitch, yaw)
+    referenced to the neutral 'zero' window. The component that varies with the
+    OUTER command is labelled pitch, the other yaw. Writes grid_points.csv
+    (cmd_outer, cmd_inner, pitch_deg, yaw_deg) that plot.py grid renders.
+    """
+    df, meta = load_run(run_dir)
+    cal = load_calibration(calibration_path)
+    s = sample_rows(df).reset_index(drop=True)
+    acc = corrected_acc(s, meta, cal)
+    for i, name in enumerate("xyz"):
+        s["a" + name] = acc[:, i]
+    counts = flag_counts(s)
+    zero = s[s["phase"] == "zero"]
+    grid = s[s["phase"] == "grid"]
+    if zero.empty or grid.empty:
+        raise ValueError("grid run has no zero/grid samples")
+    gravity = int(np.argmax(np.abs(zero[["ax", "ay", "az"]].mean()).to_numpy()))
+    ref = zero[["ax", "ay", "az"]].mean().to_numpy()
+    axis_a, axis_b = (i for i in range(3) if i != gravity)
+    tilt_a = referenced_tilt(acc[:, axis_a], acc[:, gravity], ref[axis_a], ref[gravity])
+    tilt_b = referenced_tilt(acc[:, axis_b], acc[:, gravity], ref[axis_b], ref[gravity])
+    s["_tilt_a"] = tilt_a
+    s["_tilt_b"] = tilt_b
 
     rows = []
-    for (phase, seq), g in sc[sc["phase"].isin(["kup", "kdn"])].groupby(
-            ["phase", "seq"]):
-        w = settled_window(g)
-        rows.append(dict(dir=phase, seq=int(seq),
-                         pulse_us=int(w[pulse_col].iloc[0]),
-                         theta_deg=float(w["theta"].mean()),
-                         sd=float(w["theta"].std()), n=len(w)))
-    d = pd.DataFrame(rows)
-    if d.empty:
-        print("!! no deadband data"); return
+    for (co, ci), group in grid.groupby(["cmd_outer", "cmd_inner"]):
+        w = settled_half(group)
+        t = w["t"].to_numpy()
+        ta = s.loc[w.index, "_tilt_a"].to_numpy()
+        tb = s.loc[w.index, "_tilt_b"].to_numpy()
+        creep_a = np.polyfit(t - t[0], ta, 1)[0] if len(w) > 3 else np.nan
+        creep_b = np.polyfit(t - t[0], tb, 1)[0] if len(w) > 3 else np.nan
+        rows.append({
+            "cmd_outer": int(co), "cmd_inner": int(ci),
+            "tilt_a_deg": float(ta.mean()), "tilt_b_deg": float(tb.mean()),
+            "settled": bool(max(abs(creep_a), abs(creep_b)) < GRID_CREEP_MAX_DPS),
+        })
+    cells = pd.DataFrame(rows)
 
-    noise = d["sd"].median()
-    print("\n=== DEADBAND / RESOLUTION ===")
-    print(f"  angle noise floor  {noise:.4f} deg (median within-dwell sd)")
+    # Label the component driven by the OUTER servo as pitch: pick whichever tilt
+    # axis correlates more strongly with cmd_outer.
+    corr_a = abs(np.corrcoef(cells["cmd_outer"], cells["tilt_a_deg"])[0, 1])
+    corr_b = abs(np.corrcoef(cells["cmd_outer"], cells["tilt_b_deg"])[0, 1])
+    if corr_a >= corr_b:
+        cells["pitch_deg"], cells["yaw_deg"] = cells["tilt_a_deg"], cells["tilt_b_deg"]
+        pitch_axis, yaw_axis = "xyz"[axis_a], "xyz"[axis_b]
+    else:
+        cells["pitch_deg"], cells["yaw_deg"] = cells["tilt_b_deg"], cells["tilt_a_deg"]
+        pitch_axis, yaw_axis = "xyz"[axis_b], "xyz"[axis_a]
 
-    out = []
-    for (dirn, ), grp in d.groupby(["dir"]):
-        grp = grp.sort_values("seq")
-        # group by contiguous center blocks (seq was offset by 1000 per center)
-        grp["center_idx"] = grp["seq"] // 1000
-        for ci, gg in grp.groupby("center_idx"):
-            gg = gg.sort_values("pulse_us" if dirn == "kup" else "pulse_us",
-                                ascending=(dirn == "kup"))
-            th = gg["theta_deg"].to_numpy()
-            us = gg["pulse_us"].to_numpy()
-            base = th[0]
-            moved = np.where(np.abs(th - base) > 3 * noise)[0]
-            step_us = abs(us[moved[0]] - us[0]) if len(moved) else np.nan
-            # local gain from a straight fit across the span
-            k = np.polyfit(us, th, 1)[0]
-            out.append(dict(dir=dirn, center_idx=int(ci),
-                            center_us=int(np.median(us)),
-                            deadband_us=step_us,
-                            local_gain_deg_per_us=k,
-                            resolution_deg=abs(k) * step_us if
-                            np.isfinite(step_us) else np.nan))
-    r = pd.DataFrame(out)
-    print(r.to_string(index=False, float_format="%.4f"))
-    print("  (deadband_us = us of command before motion exceeds 3x the "
-          "angle noise floor; datasheet claims 2 us, unloaded)")
-    r.to_csv(outdir / "deadband_summary.csv", index=False)
-    d.to_csv(outdir / "deadband_points.csv", index=False)
+    out = cells[["cmd_outer", "cmd_inner", "pitch_deg", "yaw_deg"]].sort_values(
+        ["cmd_outer", "cmd_inner"])
+    out.to_csv(run_dir / "grid_points.csv", index=False)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for (dirn, ci), gg in d.assign(ci=d["seq"] // 1000).groupby(["dir", "ci"]):
-        ax.plot(gg["pulse_us"], gg["theta_deg"], "-o", ms=3, lw=.8,
-                label=f"{dirn} center {ci}")
-    ax.set_xlabel("pulse [us]"); ax.set_ylabel("plate angle [deg]")
-    ax.set_title("TEST K  deadband / resolution, 1 us increments")
-    ax.legend(fontsize=8); ax.grid(alpha=.3)
-    fig.tight_layout(); fig.savefig(outdir / "deadband.png", dpi=130)
-    print(f"\n  wrote deadband_summary.csv, deadband.png -> {outdir}")
-
-
-# ===================================================================
-# TEST P : repeatability / backlash
-# ===================================================================
-def analyze_repeat(df, meta, outdir):
-    ok, _ = health(df, meta, expect_hz=meta.get("log_hz"))
-    sc = scaled(samples(df), meta)
-    grav, main, cross = pick_axes(sc, meta)
-    # pole-safe referenced tilt; reference = median pose of this run
-    ref_m = float(sc["a" + "xyz"[main]].median())
-    ref_g = float(sc["a" + "xyz"[grav]].median())
-    sc = sc.assign(theta=referenced_tilt(sc["a" + "xyz"[main]],
-                                         sc["a" + "xyz"[grav]], ref_m, ref_g))
-    pulse_col = "cmd_a" if axis_of(meta) == 0 else "cmd_b"
-
-    rows = []
-    for (phase, seq), g in sc[sc["phase"].isin(["frombelow", "fromabove"])] \
-                             .groupby(["phase", "seq"]):
-        w = settled_window(g)
-        rows.append(dict(approach=phase, seq=int(seq),
-                         target_us=int(w[pulse_col].iloc[0]),
-                         theta_deg=float(w["theta"].mean())))
-    d = pd.DataFrame(rows)
-    if d.empty:
-        print("!! no repeatability data"); return
-    d.to_csv(outdir / "repeat_points.csv", index=False)
-
-    print("\n=== REPEATABILITY / BACKLASH ===")
-    out = []
-    for target, g in d.groupby("target_us"):
-        lo = g[g["approach"] == "frombelow"]["theta_deg"]
-        hi = g[g["approach"] == "fromabove"]["theta_deg"]
-        out.append(dict(target_us=int(target), n_below=len(lo), n_above=len(hi),
-                        mean_below=lo.mean(), sd_below=lo.std(),
-                        mean_above=hi.mean(), sd_above=hi.std(),
-                        backlash_deg=hi.mean() - lo.mean(),
-                        repeatability_sd_deg=np.mean([lo.std(), hi.std()])))
-    r = pd.DataFrame(out)
-    print(r.to_string(index=False, float_format="%.4f"))
-    print("\n  backlash    = split between the two approach directions")
-    print("  repeatability = scatter WITHIN one direction (sd)")
-    print("  A sweep alone measures only their sum; this separates them.")
-    r.to_csv(outdir / "repeat_summary.csv", index=False)
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for approach, g in d.groupby("approach"):
-        ax.plot(g["seq"], g["theta_deg"], "o", ms=4, label=approach)
-    ax.set_xlabel("rep"); ax.set_ylabel("settled angle [deg]")
-    ax.set_title("TEST P  repeatability and backlash")
-    ax.legend(fontsize=8); ax.grid(alpha=.3)
-    fig.tight_layout(); fig.savefig(outdir / "repeat.png", dpi=130)
-    print(f"\n  wrote repeat_summary.csv, repeat.png -> {outdir}")
+    # planar gains and cross-coupling: [pitch;yaw] = C @ [1, dA, dB]
+    neutral = float(last_value(meta.get("neutral_us", 1520)))
+    design = np.column_stack([np.ones(len(out)),
+                              out["cmd_outer"] - neutral,
+                              out["cmd_inner"] - neutral])
+    cp, *_ = np.linalg.lstsq(design, out["pitch_deg"], rcond=None)
+    cy, *_ = np.linalg.lstsq(design, out["yaw_deg"], rcond=None)
+    mag = np.hypot(out["pitch_deg"], out["yaw_deg"])
+    span = float(max(out["pitch_deg"].max() - out["pitch_deg"].min(),
+                     out["yaw_deg"].max() - out["yaw_deg"].min()))
+    result = {
+        "test": "E", "gimbal": "both", **counts,
+        "gravity_axis": "xyz"[gravity],
+        "pitch_axis": pitch_axis, "yaw_axis": yaw_axis,
+        "cell_count": int(len(out)),
+        "unsettled_cells": int((~cells["settled"]).sum()),
+        "outer_gain_deg_per_us": float(cp[1]),
+        "inner_gain_deg_per_us": float(cy[2]),
+        "coupling_outer_to_yaw_pct": float(100 * abs(cy[1]) / (abs(cy[2]) + 1e-9)),
+        "coupling_inner_to_pitch_pct": float(100 * abs(cp[2]) / (abs(cp[1]) + 1e-9)),
+        "max_tilt_deg": float(mag.max()),
+        "travel_span_deg": span,
+    }
+    i2c_limit = max(MIN_ALLOWED_I2C_ERRORS, I2C_ERROR_MAX_FRACTION * len(s))
+    late_limit = max(MIN_ALLOWED_LATE_SAMPLES, LATE_SAMPLE_MAX_FRACTION * len(s))
+    unsettled_limit = max(1, 0.10 * len(out))
+    result["pass"], result["fail_reasons"] = pass_and_reasons([
+        ("calibration.json pass=False", bool(cal.get("pass"))),
+        (f"i2c_errors {counts['i2c_errors']} > 허용 {i2c_limit:.1f}",
+         counts["i2c_errors"] <= i2c_limit),
+        (f"late_samples {counts['late_samples']} > 허용 {late_limit:.1f}",
+         counts["late_samples"] <= late_limit),
+        (f"cell_count {len(out)} < 최소 {GRID_MIN_CELLS}",
+         len(out) >= GRID_MIN_CELLS),
+        (f"travel_span_deg {span:.2f}가 허용범위 "
+         f"({GRID_MIN_TRAVEL_SPAN_DEG}, {GRID_MAX_TRAVEL_SPAN_DEG}) 밖",
+         GRID_MIN_TRAVEL_SPAN_DEG < span < GRID_MAX_TRAVEL_SPAN_DEG),
+        (f"unsettled_cells {result['unsettled_cells']} > 허용 {unsettled_limit:.1f}",
+         result["unsettled_cells"] <= unsettled_limit),
+    ])
+    save_json(run_dir / "analysis.json", finite_json(result))
+    # Plots are produced separately by plot.py grid.
+    return result
 
 
-# ===================================================================
-# self-test: validate the fitter against known truth
-# ===================================================================
-def selftest():
-    """Synthesize step traces with KNOWN td/tau (and wn/zeta), push them
-    through the real analysis path, and check what comes back.  Run this
-    before spending bench time -- a fitter validated only on real data
-    has no truth to be validated against."""
-    print("=== SELFTEST: fitting synthetic steps with known truth ===")
-    rng = np.random.default_rng(0)
-    fs = 1000.0
-    t = np.arange(0, 2.2, 1 / fs)
-    t_cmd = 0.2
-    fails = 0
-
-    for (td_true, tau_true, A_true) in [(0.014, 0.050, 5.0),
-                                        (0.008, 0.020, 1.0),
-                                        (0.022, 0.120, -8.0)]:
-        theta = first_order(t - t_cmd, A_true, td_true, tau_true)
-        rate = np.gradient(theta, t)
-        rate += rng.normal(0, 0.4, len(t)) + 0.8 + 0.35 * t   # bias + drift
-        r_det, drift = detrend_rate(t, rate, t_cmd)
-        th = np.concatenate([[0], np.cumsum(np.diff(t) *
-                                            (r_det[1:] + r_det[:-1]) / 2)])
-        tt = t - t_cmd
-        th -= np.mean(th[tt < 0])
-        post, yp = tt[tt >= 0], th[tt >= 0]
-        A0 = np.median(yp[-150:])
-        popt, _ = curve_fit(first_order, post, yp, p0=[A0, 0.015, 0.05],
-                            bounds=([-30, 0, 1e-3], [30, 0.3, 2.0]),
-                            maxfev=20000)
-        e_td, e_tau = abs(popt[1] - td_true) * 1e3, abs(popt[2] - tau_true) * 1e3
-        okk = e_td < 3.0 and e_tau < 0.15 * tau_true * 1e3
-        fails += not okk
-        print(f"  1st: td {td_true*1e3:5.1f} -> {popt[1]*1e3:5.1f} ms "
-              f"(err {e_td:4.1f})   tau {tau_true*1e3:5.1f} -> "
-              f"{popt[2]*1e3:5.1f} ms   A {A_true:+.2f} -> {popt[0]:+.2f}   "
-              f"drift removed {drift[0]:+.2f} dps/s   {'OK' if okk else 'FAIL'}")
-
-    for (td_true, wn_true, z_true, A_true) in [(0.014, 40.0, 0.35, 5.0),
-                                               (0.010, 80.0, 0.20, 2.0)]:
-        theta = second_order(t - t_cmd, A_true, td_true, wn_true, z_true)
-        rate = np.gradient(theta, t) + rng.normal(0, 0.4, len(t)) + 0.5
-        r_det, _ = detrend_rate(t, rate, t_cmd)
-        th = np.concatenate([[0], np.cumsum(np.diff(t) *
-                                            (r_det[1:] + r_det[:-1]) / 2)])
-        tt = t - t_cmd
-        th -= np.mean(th[tt < 0])
-        post, yp = tt[tt >= 0], th[tt >= 0]
-        popt, _ = curve_fit(second_order, post, yp,
-                            p0=[np.median(yp[-150:]), 0.015, 40, 0.35],
-                            bounds=([-30, 0, 1, 0.01], [30, 0.3, 500, 0.999]),
-                            maxfev=30000)
-        e = abs(popt[2] - wn_true) / wn_true
-        okk = abs(popt[1] - td_true) * 1e3 < 3.0 and e < 0.10
-        fails += not okk
-        print(f"  2nd: td {td_true*1e3:5.1f} -> {popt[1]*1e3:5.1f} ms   "
-              f"wn {wn_true:5.1f} -> {popt[2]:5.1f}   "
-              f"zeta {z_true:.2f} -> {popt[3]:.2f}   {'OK' if okk else 'FAIL'}")
-
-    # the thing this replaced: chord back-extrapolation, for comparison
-    theta = first_order(t - t_cmd, 5.0, 0.014, 0.050)
-    tt = t - t_cmd
-    y = theta
-    i20 = np.argmax(y > 0.2 * 5.0); i80 = np.argmax(y > 0.8 * 5.0)
-    slope = (y[i80] - y[i20]) / (tt[i80] - tt[i20])
-    td_chord = tt[i20] - y[i20] / slope
-    print(f"\n  chord method on the SAME noiseless trace: "
-          f"td {td_chord*1e3:.1f} ms vs truth 14.0 ms "
-          f"(bias {-0.24*50:.1f} ms = -0.24*tau, as predicted)")
-
-    print(f"\n  {'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
-    return 0 if fails == 0 else 1
+def analyze_run(run_dir: Path, calibration_path: Path) -> dict:
+    _, meta = load_run(run_dir)
+    test = str(last_value(meta.get("test", ""))).upper()
+    if test == "HEALTH":
+        return analyze_health(run_dir, calibration_path)
+    if test == "A":
+        return analyze_mapping(run_dir, calibration_path)
+    if test == "B":
+        return analyze_step(run_dir, calibration_path)
+    if test == "C":
+        return analyze_chirp(run_dir, calibration_path)
+    if test == "D":
+        return analyze_deadband(run_dir, calibration_path)
+    if test == "E":
+        return analyze_grid(run_dir, calibration_path)
+    raise ValueError(f"unsupported test type {test}")
 
 
-# ===================================================================
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("rundir", nargs="?", help="a runs/<...> directory from capture.py")
-    ap.add_argument("--selftest", action="store_true",
-                    help="validate the fitters on synthetic data with known truth")
-    a = ap.parse_args()
+def selftest() -> int:
+    t = np.arange(0, 2.2, 0.001)
+    command = 0.2
+    truth = dict(amplitude=5.0, delay=0.014, tau=0.050)
+    angle = first_order(t - command, truth["amplitude"], truth["delay"], truth["tau"])
+    rng = np.random.default_rng(7)
+    rate = np.gradient(angle, t) + 1.2 + 0.2 * t + rng.normal(0, 0.3, len(t))
+    rate = detrend_rate(t, rate, command)
+    integrated = np.concatenate([[0], np.cumsum(np.diff(t) *
+        (rate[1:] + rate[:-1]) / 2)])
+    tt = t - command
+    integrated -= integrated[tt < 0].mean()
+    post = tt >= 0
+    fitted, _ = curve_fit(first_order, tt[post], integrated[post],
+                          p0=[5, .01, .05], bounds=([-20, 0, .001], [20, .3, 2]))
+    ok = abs(fitted[1] - truth["delay"]) < .003 and abs(fitted[2] - truth["tau"]) < .01
+    print(f"selftest delay {1000*fitted[1]:.2f} ms, tau {1000*fitted[2]:.2f} ms: "
+          f"{'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
 
-    if a.selftest:
+
+def main() -> int:
+    # analysis.json / fail_reasons carry Korean text; the default Windows
+    # console codepage (cp1252) can't encode it and would crash the print
+    # below even though the JSON file itself was already written fine.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="mode", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("run_dir", type=Path)
+    run.add_argument("--calibration", type=Path, required=True)
+    sub.add_parser("selftest")
+    args = parser.parse_args()
+    if args.mode == "selftest":
         return selftest()
-    if not a.rundir:
-        ap.error("need a run directory, or --selftest")
-
-    rundir = Path(a.rundir)
-    df, meta = load(rundir)
-    test = str(meta.get("test", meta.get("command", "?"))).upper()
-    print(f"# {rundir}   test={test}  axis={meta.get('axis')}  "
-          f"fw={meta.get('fw')}  captured={meta.get('captured_utc')}")
-
-    handler = {"A": analyze_mapping, "B": analyze_step,
-               "K": analyze_deadband, "P": analyze_repeat}.get(test)
-    if handler is None:
-        print(f"!! don't know how to analyze test '{test}'")
-        return 1
-    handler(df, meta, rundir)
-    return 0
+    result = analyze_run(args.run_dir, args.calibration)
+    print(json.dumps(finite_json(result), ensure_ascii=False, indent=2))
+    return 0 if result.get("pass") else 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

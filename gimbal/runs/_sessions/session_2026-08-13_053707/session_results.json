@@ -1,0 +1,103 @@
+{
+  "status": "PASS",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 996.0,
+      "effective_sample_rate_hz": 1004.0160642570281,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.9988813837685738,
+      "g_mag_sd": 0.00387267490909534,
+      "gyro_bias_dps": [
+        2.017225609756129,
+        1.1914634146341438,
+        -1.6120731707317073
+      ],
+      "gyro_noise_dps": [
+        0.19281885594030285,
+        0.17864813088817844,
+        0.18578214647495128
+      ],
+      "pass": 1
+    },
+    "chirp_outer_gimbal": {
+      "test": "C",
+      "axis": 0,
+      "gimbal": "outer",
+      "main_gyro_axis": "y",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 20300,
+      "sample_period_us_median": 998.0,
+      "effective_sample_rate_hz": 1002.0040080160321,
+      "acquisition_jitter_us_p99": 89.0,
+      "sample_rate_hz": 1002.0040080168692,
+      "coherent_band_lo_hz": 0.5000020000084178,
+      "coherent_band_hi_hz": 11.500046000193608,
+      "trusted_span_hz": 11.00004400018519,
+      "gain_ref_deg_per_us": 0.05420654166850704,
+      "bandwidth_3db_hz": 9.00003600015152,
+      "phase_delay_ms": 73.52543458007824,
+      "pass": 1
+    },
+    "chirp_inner_gimbal": {
+      "test": "C",
+      "axis": 1,
+      "gimbal": "inner",
+      "main_gyro_axis": "x",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 20300,
+      "sample_period_us_median": 998.0,
+      "effective_sample_rate_hz": 1002.0040080160321,
+      "acquisition_jitter_us_p99": 89.0,
+      "sample_rate_hz": 1002.0040080168692,
+      "coherent_band_lo_hz": 0.5000020000084178,
+      "coherent_band_hi_hz": 17.50007000029462,
+      "trusted_span_hz": 17.000068000286202,
+      "gain_ref_deg_per_us": 0.03130470919856242,
+      "bandwidth_3db_hz": 13.000052000218862,
+      "phase_delay_ms": 55.0431025311813,
+      "pass": 1
+    },
+    "deadband_outer_gimbal": {
+      "test": "D",
+      "axis": 0,
+      "gimbal": "outer",
+      "main_axis": "x",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 33600,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 11.0,
+      "local_gain_deg_per_us": 0.057798940519291325,
+      "backlash_deg": 0.5459166253938288,
+      "backlash_us": 9.445097444504547,
+      "travel_span_deg": 6.841827010350968,
+      "backlash_exceeds_threshold": 1,
+      "pass": 1
+    },
+    "deadband_inner_gimbal": {
+      "test": "D",
+      "axis": 1,
+      "gimbal": "inner",
+      "main_axis": "y",
+      "i2c_errors": 3,
+      "late_samples": 282,
+      "samples": 33600,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 11.0,
+      "local_gain_deg_per_us": 0.03944570189379048,
+      "backlash_deg": 0.4072943465905965,
+      "backlash_us": 10.325443002313834,
+      "travel_span_deg": 4.796979364554945,
+      "backlash_exceeds_threshold": 0,
+      "pass": 1
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "status": "PASS",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 1002.0,
+      "effective_sample_rate_hz": 998.003992015968,
+      "acquisition_jitter_us_p99": 9.0,
+      "g_mag_mean": 0.9998813277335187,
+      "g_mag_sd": 0.004047200259328858,
+      "gyro_bias_dps": [
+        2.0807926829268535,
+        1.1843292682926823,
+        -1.629725609756095
+      ],
+      "gyro_noise_dps": [
+        0.19544918254260948,
+        0.19103543708248621,
+        0.1881247646896351
+      ],
+      "pass": 1
+    },
+    "step_outer_gimbal": {
+      "test": "B",
+      "axis": 0,
+      "gimbal": "outer",
+      "main_gyro_axis": "y",
+      "i2c_errors": 0,
+      "late_samples": 2,
+      "samples": 22000,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 9.0,
+      "step_count": 10,
+      "useful_step_count": 10,
+      "direct_onset_ms": 9.97049999999966,
+      "fitted_delay_ms": 30.419161840744728,
+      "rise_10_90_ms": 41.499999999998984,
+      "settling_2pct_ms": 563.4705000000001,
+      "bandwidth_hz": 10.387698840984356,
+      "peak_slew_dps": 258.7649435988726,
+      "tail_rate_rms_dps": 0.1885091937884214,
+      "median_residual_pct": 3.7084093604104433,
+      "persistent_ring_detected": 0,
+      "delay_split_warning": 1,
+      "recommend_chirp": 1,
+      "pass": 1
+    },
+    "step_inner_gimbal": {
+      "test": "B",
+      "axis": 1,
+      "gimbal": "inner",
+      "main_gyro_axis": "x",
+      "i2c_errors": 0,
+      "late_samples": 1,
+      "samples": 22000,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 2.0,
+      "step_count": 10,
+      "useful_step_count": 9,
+      "direct_onset_ms": 8.969999999997924,
+      "fitted_delay_ms": 33.17139026610465,
+      "rise_10_90_ms": 34.00099999999995,
+      "settling_2pct_ms": 363.9700000000019,
+      "bandwidth_hz": 12.743646854193242,
+      "peak_slew_dps": 401.23812417854236,
+      "tail_rate_rms_dps": 0.19308760702575845,
+      "median_residual_pct": 3.9702208552512928,
+      "persistent_ring_detected": 0,
+      "delay_split_warning": 1,
+      "recommend_chirp": 1,
+      "pass": 1
+    }
+  }
+}

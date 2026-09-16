@@ -1,0 +1,20 @@
+{
+  "test": "C",
+  "axis": 1,
+  "gimbal": "inner",
+  "main_gyro_axis": "y",
+  "i2c_errors": 0,
+  "late_samples": 0,
+  "samples": 20300,
+  "sample_period_us_median": 998.0,
+  "effective_sample_rate_hz": 1002.0040080160321,
+  "acquisition_jitter_us_p99": 89.0,
+  "sample_rate_hz": 1002.0040080168692,
+  "coherent_band_lo_hz": 9.00003600015152,
+  "coherent_band_hi_hz": 9.500038000159938,
+  "trusted_span_hz": 0.5000020000084184,
+  "gain_ref_deg_per_us": null,
+  "bandwidth_3db_hz": null,
+  "phase_delay_ms": null,
+  "pass": 0
+}

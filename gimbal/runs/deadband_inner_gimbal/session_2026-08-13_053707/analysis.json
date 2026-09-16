@@ -1,0 +1,18 @@
+{
+  "test": "D",
+  "axis": 1,
+  "gimbal": "inner",
+  "main_axis": "y",
+  "i2c_errors": 3,
+  "late_samples": 282,
+  "samples": 33600,
+  "sample_period_us_median": 1000.0,
+  "effective_sample_rate_hz": 1000.0,
+  "acquisition_jitter_us_p99": 11.0,
+  "local_gain_deg_per_us": 0.03944570189379048,
+  "backlash_deg": 0.4072943465905965,
+  "backlash_us": 10.325443002313834,
+  "travel_span_deg": 4.796979364554945,
+  "backlash_exceeds_threshold": 0,
+  "pass": 1
+}

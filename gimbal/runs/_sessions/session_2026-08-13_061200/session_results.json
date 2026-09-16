@@ -1,0 +1,60 @@
+{
+  "status": "FAIL: mapping_inner_gimbal 실패로 중단 (late_samples 3747 > 허용 2811.0 (전체 281099개 중 1.0%, jitter_p99=32767us)). 이 테스트를 건너뛰고 계속하려면 --keep-going, 특정 테스트만 하려면 --tests 를 쓰세요.",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 1,
+      "samples": 4000,
+      "sample_period_us_median": 999.0,
+      "effective_sample_rate_hz": 1001.001001001001,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.9996614372594436,
+      "g_mag_sd": 0.0038479798405925167,
+      "gyro_bias_dps": [
+        1.9448932926829574,
+        1.1718902439024392,
+        -1.5994054878048727
+      ],
+      "gyro_noise_dps": [
+        0.18704198409136485,
+        0.17726543138689788,
+        0.19186724285621723
+      ],
+      "pass": 1,
+      "fail_reasons": []
+    },
+    "mapping_inner_gimbal": {
+      "test": "A",
+      "axis": 1,
+      "gimbal": "inner",
+      "i2c_errors": 27,
+      "late_samples": 3747,
+      "samples": 281099,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 32767.0,
+      "gravity_axis": "z",
+      "main_axis": "y",
+      "cross_axis": "x",
+      "gain_deg_per_us": 0.0336102854447024,
+      "neutral_us": 1513.7112078141113,
+      "angle_min_deg": -6.500563599297155,
+      "angle_max_deg": 15.730660085933115,
+      "max_abs_angle_deg": 15.730660085933115,
+      "travel_span_deg": 22.23122368523027,
+      "nonlinearity_pct": 8.964064366188703,
+      "hysteresis_mean_deg": 0.34479653802533666,
+      "hysteresis_max_deg": 0.6156605421746093,
+      "cross_axis_span_deg": 1.0286142000731933,
+      "unsettled_points": 19,
+      "point_count": 280,
+      "pass": 0,
+      "fail_reasons": [
+        "late_samples 3747 > 허용 2811.0 (전체 281099개 중 1.0%, jitter_p99=32767us)"
+      ],
+      "recommend_deadband_test": 1,
+      "error": "mapping_inner_gimbal 분석 FAIL: late_samples 3747 > 허용 2811.0 (전체 281099개 중 1.0%, jitter_p99=32767us)"
+    }
+  }
+}

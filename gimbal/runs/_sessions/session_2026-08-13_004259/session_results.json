@@ -1,0 +1,55 @@
+{
+  "status": "PASS",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 0,
+      "samples": 4000,
+      "sample_period_us_median": 996.0,
+      "effective_sample_rate_hz": 1004.0160642570281,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 1.0006325043771056,
+      "g_mag_sd": 0.003853809252604137,
+      "gyro_bias_dps": [
+        2.045045731707349,
+        1.1962195121951218,
+        -1.604161585365854
+      ],
+      "gyro_noise_dps": [
+        0.18759786695832723,
+        0.1855360258674991,
+        0.1890561729525245
+      ],
+      "pass": 1
+    },
+    "mapping_inner_gimbal": {
+      "test": "A",
+      "axis": 1,
+      "gimbal": "inner",
+      "i2c_errors": 1,
+      "late_samples": 19,
+      "samples": 297200,
+      "sample_period_us_median": 1000.0,
+      "effective_sample_rate_hz": 1000.0,
+      "acquisition_jitter_us_p99": 11.0,
+      "gravity_axis": "z",
+      "main_axis": "y",
+      "cross_axis": "x",
+      "gain_deg_per_us": 0.03325883661114552,
+      "neutral_us": 1499.6852004449177,
+      "angle_min_deg": -3.478416809200969,
+      "angle_max_deg": 354.8717891578463,
+      "max_abs_angle_deg": 354.8717891578463,
+      "travel_span_deg": 358.35020596704726,
+      "nonlinearity_pct": 100.3698814001356,
+      "hysteresis_mean_deg": 15.22862055566589,
+      "hysteresis_max_deg": 323.8923144281323,
+      "cross_axis_span_deg": 23.134022273128316,
+      "unsettled_points": 24,
+      "point_count": 296,
+      "pass": 1,
+      "recommend_deadband_test": 1
+    }
+  }
+}

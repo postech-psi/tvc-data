@@ -1,0 +1,11 @@
+#META fw=tvc_sid_2.2_gimbal_bin1k test=D axis=0 gimbal=outer gimbal_count=2 imu_count=1 imu_addr=0x69 who_am_i=0xEA servo_hz=333 neutral_us=1520 pin_outer=18 pin_inner=19
+#META gyro_cfg1=0x3F accel_cfg=0x39 gyro_lsb_per_dps=16.4000 acc_lsb_per_g=16384.0 sensor_odr_hz=1125 stream_hz=1000 serial_baud=921600 health_pass=1 i2c_err_start=10 
+#META limit_lo_us=1370 limit_hi_us=1690 center_us=1520 negative_travel_us=150 positive_travel_us=170
+#META db_range_us=60 db_step_us=3 dwell_ms=400 log_hz=1000
+#META expected_samples=33600 expected_events=83
+#COLS rec,t_us,phase,seq,axis,gimbal,cmd_outer,cmd_inner,ax,ay,az,gx,gy,gz,flags,packet_seq,jitter_us
+#BINARY_BEGIN format=tvc_sid_gimbal_bin_v2 record_bytes=36 stream_hz=1000
+E][Wire.cpp:499] requestFrom(): i2cWriteReadNonStop returned Error 263
+#BINARY_END packets=33683 serial_short_writes=0
+#META firmware_test_pass=1 i2c_err_end=11
+# TEST_D_END

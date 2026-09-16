@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 
+# PlatformIO firmware build output (gimbal/): regenerated from src/, never committed
+.pio/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

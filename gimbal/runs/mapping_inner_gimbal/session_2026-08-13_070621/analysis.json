@@ -1,0 +1,31 @@
+{
+  "test": "A",
+  "axis": 1,
+  "gimbal": "inner",
+  "i2c_errors": 26,
+  "late_samples": 3856,
+  "samples": 281192,
+  "sample_period_us_median": 1000.0,
+  "effective_sample_rate_hz": 1000.0,
+  "acquisition_jitter_us_p99": 32767.0,
+  "gravity_axis": "z",
+  "main_axis": "y",
+  "cross_axis": "x",
+  "gain_deg_per_us": 0.033415708770975945,
+  "neutral_us": 1512.9963468254539,
+  "angle_min_deg": -6.455000919942559,
+  "angle_max_deg": 15.69961996046732,
+  "max_abs_angle_deg": 15.69961996046732,
+  "travel_span_deg": 22.15462088040988,
+  "nonlinearity_pct": 8.86250985664143,
+  "hysteresis_mean_deg": 0.3072523450247036,
+  "hysteresis_max_deg": 0.5834221595489639,
+  "cross_axis_span_deg": 1.374579661540299,
+  "unsettled_points": 13,
+  "point_count": 280,
+  "pass": 0,
+  "fail_reasons": [
+    "late_samples 3856 > 허용 2811.9 (전체 281192개 중 1.0%, jitter_p99=32767us)"
+  ],
+  "recommend_deadband_test": 1
+}

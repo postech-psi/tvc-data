@@ -1,0 +1,31 @@
+{
+  "status": "FAIL: grid_both_gimbals 실패로 중단. 이 테스트를 건너뛰고 계속하려면 --keep-going, 특정 테스트만 하려면 --tests 를 쓰세요.",
+  "results": {
+    "health": {
+      "test": "HEALTH",
+      "i2c_errors": 0,
+      "late_samples": 2,
+      "samples": 4000,
+      "sample_period_us_median": 998.0,
+      "effective_sample_rate_hz": 1002.0040080160321,
+      "acquisition_jitter_us_p99": 11.0,
+      "g_mag_mean": 0.998807780503413,
+      "g_mag_sd": 0.0038991423556870904,
+      "gyro_bias_dps": [
+        1.9504420731707577,
+        1.1691615853658517,
+        -1.6119969512195151
+      ],
+      "gyro_noise_dps": [
+        0.18771762541476625,
+        0.18178901152464874,
+        0.18942227437022133
+      ],
+      "pass": 1
+    },
+    "grid_both_gimbals": {
+      "pass": 0,
+      "error": "grid run has no zero/grid samples"
+    }
+  }
+}
